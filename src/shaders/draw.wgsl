@@ -7,7 +7,8 @@
     time: f32;
 };
 struct Agent {
-	position: vec2<f32>;
+	posX: f32;
+	posY: f32;
 	angle: f32;
 };
 [[block]]struct Agents {
@@ -27,8 +28,8 @@ fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
 
 	let agent : Agent = agents.agents[id.x];
 	// Draw to trail map
-	let cellX : i32 = i32(agent.position.x);
-	let cellY : i32 = i32(agent.position.y);
+	let cellX : i32 = i32(agent.posX);
+	let cellY : i32 = i32(agent.posY);
 
 	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(0.1, 0.6, 0.5, 1.));
 }

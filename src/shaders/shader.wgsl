@@ -19,9 +19,16 @@ fn vs_main(
 }
  // Fragment shader
 
+[[block]] struct RenderParams {
+    width: f32;
+    height: f32;
+    scaleDownFactor: f32;
+};
+[[group(0), binding(2)]] var<uniform> renderParams: RenderParams;
+
 [[stage(fragment)]]
 fn fs_main(in: VertexOutput) -> [[location(0)]] vec4<f32> {
-    var thjing = textureLoad(SourceTexture, vec2<i32>(in.clip_position).xy);
+    var thjing = textureLoad(SourceTexture, vec2<i32>(in.clip_position * renderParams.scaleDownFactor).xy);
     return thjing;
     // return in.clip_position / vec4<f32>(1000.0);
 }

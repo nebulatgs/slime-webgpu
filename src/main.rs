@@ -1,19 +1,20 @@
-use std::{mem, time::Instant};
+use std::time::Instant;
 
 use rand::Rng;
-use wgpu::{util::DeviceExt, BindGroup, Device, MapMode};
+use wgpu::{util::DeviceExt, BindGroup, Device};
 use winit::{
     dpi::PhysicalSize,
     event::*,
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder, Fullscreen}, monitor::VideoMode,
+    window::{Fullscreen, Window, WindowBuilder},
 };
-const NUM_AGENTS: u32 = 500_000;
-const AGENTS_PER_GROUP: u32 = 256;
-const AGENTS_PER_DRAW_GROUP: u32 = 16;
-const SIM_WIDTH: u32 = 1920;
-const SIM_HEIGHT: u32 = 1080;
-const SCALE_DOWN_FACTOR: u32 = 2;
+static NUM_AGENTS: u32 = 1 << 14;
+static AGENTS_PER_GROUP: u32 = 256;
+static AGENTS_PER_DRAW_GROUP: u32 = 16;
+static SCALE_DOWN_FACTOR: f32 = 1.0;
+static SIM_WIDTH: u32 = (1366.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_HEIGHT: u32 = (768.0 * SCALE_DOWN_FACTOR) as _;
+static SAMPLE_COUNT: u32 = 4;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -45,6 +46,15 @@ struct ShaderParams {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[allow(non_snake_case)]
+struct RenderParams {
+    width: f32,
+    height: f32,
+    scaleDownFactor: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[allow(non_snake_case)]
 struct Agent {
     posX: f32,
     posY: f32,
@@ -71,6 +81,8 @@ struct State {
     ping_texture: wgpu::Texture,
     pong_texture: wgpu::Texture,
     then: Instant,
+    bundle: wgpu::RenderBundle,
+    msaa_framebuffer: wgpu::TextureView,
 }
 
 #[repr(C)]
@@ -111,7 +123,7 @@ impl State {
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -136,6 +148,9 @@ impl State {
             present_mode: wgpu::PresentMode::Fifo,
         };
         surface.configure(&device, &config);
+        let msaa_framebuffer =
+            Self::create_multisampled_framebuffer(&device, &config, SAMPLE_COUNT);
+
         let clear_color = wgpu::Color::BLACK;
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
@@ -178,6 +193,13 @@ impl State {
             contents: bytemuck::cast_slice(VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let render_param_data = RenderParams {
+            width: SIM_WIDTH as _,
+            height: SIM_HEIGHT as _,
+            scaleDownFactor: SCALE_DOWN_FACTOR as _,
+        };
+        let render_param_slice = &[render_param_data];
+        let render_param_slice: &[u8] = bytemuck::cast_slice(render_param_slice);
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -199,6 +221,17 @@ impl State {
                             access: wgpu::StorageTextureAccess::ReadOnly,
                             format: wgpu::TextureFormat::Rgba32Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    // Render Params Buffer
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(render_param_slice.len() as _),
                         },
                         count: None,
                     },
@@ -248,10 +281,17 @@ impl State {
             },
             depth_stencil: None, // 1.
             multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
+                count: SAMPLE_COUNT,              // 2.
                 mask: !0,                         // 3.
                 alpha_to_coverage_enabled: false, // 4.
             },
+        });
+        let render_param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Render Parameter Buffer"),
+            contents: bytemuck::cast_slice(&[render_param_data]),
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::MAP_WRITE,
         });
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &render_pipeline.get_bind_group_layout(0),
@@ -266,15 +306,34 @@ impl State {
                         &ping_texture.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: render_param_buffer.as_entire_binding(),
+                },
             ],
             label: None,
         });
+
+        let mut encoder =
+            device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                label: None,
+                color_formats: &[config.format],
+                depth_stencil: None,
+                sample_count: SAMPLE_COUNT,
+            });
+        encoder.set_pipeline(&render_pipeline);
+        encoder.set_vertex_buffer(0, vertex_buffer.slice(..));
+        encoder.draw(0..VERTICES.len() as _, 0..1);
+        let bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
+            label: Some("main"),
+        });
+
         let shader_param_data = ShaderParams {
             numAgents: NUM_AGENTS as _,
             width: SIM_WIDTH as _,
             height: SIM_HEIGHT as _,
             trailWeight: 0.5,
-            deltaTime: 0.0,
+            deltaTime: 0.03,
             time: 0.0,
         };
         let shader_param_slice = &[shader_param_data];
@@ -591,13 +650,38 @@ impl State {
             compute_diffuse_bind_group,
             vertex_buffer,
             shader_param_buffer,
-            time: 0.0,
+            time: shader_param_data.time,
             ping_texture,
             pong_texture,
             then: Instant::now(),
+            bundle,
+            msaa_framebuffer,
         }
     }
+    fn create_multisampled_framebuffer(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        sample_count: u32,
+    ) -> wgpu::TextureView {
+        let multisampled_texture_extent = wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        };
+        let multisampled_frame_descriptor = &wgpu::TextureDescriptor {
+            size: multisampled_texture_extent,
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            label: None,
+        };
 
+        device
+            .create_texture(multisampled_frame_descriptor)
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
     fn build_agent_buffer(device: &Device) -> wgpu::Buffer {
         let mut agents = vec![
             Agent {
@@ -611,16 +695,18 @@ impl State {
         let mut rng = rand::thread_rng();
         let now = std::time::Instant::now();
         for agent in &mut agents {
-            static R: f32 = 200.0;
+            static R: f32 = 100.0;
             static CENTER_X: f32 = SIM_WIDTH as f32 / 2.0;
             static CENTER_Y: f32 = SIM_HEIGHT as f32 / 2.0;
-            static RAD_TO_DEG: f32 = 180.0 / std::f32::consts::PI;
+            static RAD_TO_DEG: f32 = 180.0 * std::f32::consts::FRAC_1_PI;
 
             let r = R * rng.gen_range::<f32, _>(0.0..1.0).sqrt();
             let theta = rng.gen_range::<f32, _>(0.0..1.0) * 2.0 * std::f32::consts::PI;
             agent.posX = CENTER_X + r * theta.cos();
             agent.posY = CENTER_Y + r * theta.sin();
-            agent.angle = (theta * RAD_TO_DEG); 
+            // agent.posX = 100.0;
+            // agent.posY = 100.0;
+            agent.angle = theta * RAD_TO_DEG + 180.0;
             // agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
             // agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
         }
@@ -650,7 +736,7 @@ impl State {
     fn input(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved {
-                device_id,
+                device_id: _,
                 position,
                 ..
             } => {
@@ -702,6 +788,7 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
@@ -731,8 +818,8 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa_framebuffer,
+                    resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
                         store: true,
@@ -740,10 +827,27 @@ impl State {
                 }],
                 depth_stencil_attachment: None,
             });
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.render_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..VERTICES.len() as _, 0..1);
+            let mut encoder =
+                self.device
+                    .create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                        label: None,
+                        color_formats: &[self.config.format],
+                        depth_stencil: None,
+                        sample_count: SAMPLE_COUNT,
+                    });
+            encoder.set_pipeline(&self.render_pipeline);
+            encoder.set_bind_group(0, &self.render_bind_group, &[]);
+            encoder.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            encoder.draw(0..VERTICES.len() as _, 0..1);
+            self.bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
+                label: Some("main"),
+            });
+            render_pass.execute_bundles(std::iter::once(&self.bundle));
+
+            // render_pass.set_pipeline(&self.render_pipeline);
+            // render_pass.set_bind_group(0, &self.render_bind_group, &[]);
+            // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            // render_pass.draw(0..VERTICES.len() as _, 0..1);
         }
         {
             encoder.copy_texture_to_texture(

@@ -11,11 +11,13 @@ fn triple32(x: u32) -> u32 {
 }
 
 struct Agent {
-	position: vec2<f32>;
+	// position: vec2<f32>;
+	posX: f32;
+	posY: f32;
 	angle: f32;
 };
 [[block]]struct Agents {
-    data: [[stride(16)]] array<Agent>;
+    data: array<Agent>;
 };
 
 [[block]]struct SpeciesSettings {
@@ -55,8 +57,8 @@ var<storage, read_write> agents: Agents;
 fn sense(agent: Agent, settings: SpeciesSettings, sensorAngleOffset: f32) -> f32 {
 	var sensorAngle = agent.angle + sensorAngleOffset;
 	var sensorDir = vec2<f32>(cos(sensorAngle), sin(sensorAngle));
-
-	var sensorPos = agent.position + sensorDir * settings.sensorOffsetDst;
+	let position = vec2<f32>(agent.posX, agent.posY);
+	var sensorPos = position + sensorDir * settings.sensorOffsetDst;
 	var sensorCentreX = i32(sensorPos.x);
 	var sensorCentreY = i32(sensorPos.y);
 
@@ -90,7 +92,8 @@ fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 
 
 	var agent = agents.data[id.x];
-	var pos = agent.position;
+	let position = vec2<f32>(agent.posX, agent.posY);
+	var pos = position;
 
 	var random = triple32(u32(pos.y * f32(shaderParams.width) + pos.x) + triple32(id.x + u32(shaderParams.time * 100000.0)));
 
@@ -123,7 +126,7 @@ fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 
 	// Update position
 	var direction = vec2<f32>(cos(agent.angle), sin(agent.angle));
-	var newPos: vec2<f32> = agent.position + direction * shaderParams.deltaTime * speciesSettings.moveSpeed;
+	var newPos: vec2<f32> = position + direction * shaderParams.deltaTime * speciesSettings.moveSpeed;
 
 	
 	// Clamp position to map boundaries, and pick new random move dir if hit boundary
@@ -144,5 +147,6 @@ fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	// 	// TrailMap.elements[offset + 2] = newVal.z;
 	// 	// TrailMap.elements[offset + 3] = newVal.w;
 	// }
-	agents.data[id.x].position = newPos;
+	agents.data[id.x].posX = newPos.x;
+	agents.data[id.x].posY = newPos.y;
 }
