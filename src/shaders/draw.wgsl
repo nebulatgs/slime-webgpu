@@ -30,5 +30,5 @@ fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	let cellX : i32 = i32(agent.position.x);
 	let cellY : i32 = i32(agent.position.y);
 
-	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(1., 1., 1., 1.));
+	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(0.1, 0.6, 0.5, 1.));
 }

@@ -81,7 +81,7 @@ fn scaleToRange01(state: u32) -> f32 {
 }
 
 
-[[stage(compute), workgroup_size(64,1,1)]]
+[[stage(compute), workgroup_size(256,1,1)]]
 fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 
 	if (id.x >= u32(shaderParams.numAgents)) {

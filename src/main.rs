@@ -6,12 +6,14 @@ use winit::{
     dpi::PhysicalSize,
     event::*,
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    window::{Window, WindowBuilder, Fullscreen}, monitor::VideoMode,
 };
-const NUM_AGENTS: u32 = 100_000;
-const AGENTS_PER_GROUP: u32 = 64;
-const SIM_WIDTH: u32 = 1300;
-const SIM_HEIGHT: u32 = 800;
+const NUM_AGENTS: u32 = 500_000;
+const AGENTS_PER_GROUP: u32 = 256;
+const AGENTS_PER_DRAW_GROUP: u32 = 16;
+const SIM_WIDTH: u32 = 1920;
+const SIM_HEIGHT: u32 = 1080;
+const SCALE_DOWN_FACTOR: u32 = 2;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -87,7 +89,6 @@ const VERTICES: &[Vertex] = &[
     Vertex {
         position: [1.0, -1.0, 0.0],
     },
-    
     Vertex {
         position: [1.0, -1.0, 0.0],
     },
@@ -110,7 +111,7 @@ impl State {
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -153,20 +154,9 @@ impl State {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-        });
-        let ping_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Texture"),
-            size: wgpu::Extent3d {
-                width: SIM_WIDTH,
-                height: SIM_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
         });
         let pong_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Pong Texture"),
@@ -179,7 +169,9 @@ impl State {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -296,10 +288,10 @@ impl State {
                 | wgpu::BufferUsages::MAP_WRITE,
         });
         let species_param_data = SpeciesSettings {
-            moveSpeed: 100.0,
+            moveSpeed: 50.0,
             turnSpeed: -6.0,
             sensorAngleDegrees: 112.0,
-            sensorOffsetDst: 20.0,
+            sensorOffsetDst: 50.0,
             sensorSize: 1.0,
             colourR: 0.0,
             colourG: 1.0,
@@ -510,7 +502,6 @@ impl State {
                 entry_point: "diffuse",
             });
         let agent_buffer = Self::build_agent_buffer(&device);
-        let texture_buffer = Self::build_texture_buffer(&device);
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &compute_pipeline.get_bind_group_layout(0),
             entries: &[
@@ -607,21 +598,6 @@ impl State {
         }
     }
 
-    fn build_texture_buffer(device: &Device) -> wgpu::Buffer {
-        let mut pixels = vec![0.0; (SIM_WIDTH * SIM_HEIGHT * 4) as _];
-
-        for chunk in &mut pixels.chunks_mut(4) {
-            chunk[3] = 1.0;
-        }
-
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Texture Buffer"),
-            contents: bytemuck::cast_slice(&pixels),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
-
-        buffer
-    }
     fn build_agent_buffer(device: &Device) -> wgpu::Buffer {
         let mut agents = vec![
             Agent {
@@ -635,9 +611,18 @@ impl State {
         let mut rng = rand::thread_rng();
         let now = std::time::Instant::now();
         for agent in &mut agents {
-            agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
-            agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
-            agent.angle = rng.gen_range(0.0..360.0);
+            static R: f32 = 200.0;
+            static CENTER_X: f32 = SIM_WIDTH as f32 / 2.0;
+            static CENTER_Y: f32 = SIM_HEIGHT as f32 / 2.0;
+            static RAD_TO_DEG: f32 = 180.0 / std::f32::consts::PI;
+
+            let r = R * rng.gen_range::<f32, _>(0.0..1.0).sqrt();
+            let theta = rng.gen_range::<f32, _>(0.0..1.0) * 2.0 * std::f32::consts::PI;
+            agent.posX = CENTER_X + r * theta.cos();
+            agent.posY = CENTER_Y + r * theta.sin();
+            agent.angle = (theta * RAD_TO_DEG); 
+            // agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
+            // agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
         }
 
         println!("generated agents in {}ms", now.elapsed().as_millis());
@@ -688,7 +673,10 @@ impl State {
             width: SIM_WIDTH as _,
             height: SIM_HEIGHT as _,
             trailWeight: 0.5,
-            deltaTime: Instant::now().checked_duration_since(self.then).unwrap().as_secs_f32(),
+            deltaTime: Instant::now()
+                .checked_duration_since(self.then)
+                .unwrap()
+                .as_secs_f32(),
             time: self.time,
         };
         let shader_param_slice = &[shader_param_data];
@@ -728,7 +716,7 @@ impl State {
             });
             compute_draw_pass.set_pipeline(&self.compute_draw_pipeline);
             compute_draw_pass.set_bind_group(0, &self.compute_draw_bind_group, &[]);
-            compute_draw_pass.dispatch(NUM_AGENTS / 16, 1, 1);
+            compute_draw_pass.dispatch(NUM_AGENTS / AGENTS_PER_DRAW_GROUP, 1, 1);
         }
         {
             let mut compute_diffuse_pass =
@@ -758,11 +746,15 @@ impl State {
             render_pass.draw(0..VERTICES.len() as _, 0..1);
         }
         {
-            encoder.copy_texture_to_texture(self.pong_texture.as_image_copy(), self.ping_texture.as_image_copy(),  wgpu::Extent3d {
-                width: SIM_WIDTH,
-                height: SIM_HEIGHT,
-                depth_or_array_layers: 1,
-            });
+            encoder.copy_texture_to_texture(
+                self.pong_texture.as_image_copy(),
+                self.ping_texture.as_image_copy(),
+                wgpu::Extent3d {
+                    width: SIM_WIDTH,
+                    height: SIM_HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
         // submit will accept anything that implements IntoIter
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -782,6 +774,7 @@ fn main() {
         })
         .build(&event_loop)
         .unwrap();
+    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
     let mut state = pollster::block_on(State::new(&window));
 
     event_loop.run(move |event, _, control_flow| {
