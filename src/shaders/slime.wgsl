@@ -66,7 +66,7 @@ fn sense(agent: Agent, settings: SpeciesSettings, sensorAngleOffset: f32) -> f32
 		for (var offsetY = -settings.sensorSize; offsetY <= settings.sensorSize; offsetY = offsetY + 1.0) {
 			var sampleX = min(i32(shaderParams.width) - 1, max(0, sensorCentreX + i32(offsetX)));
 			var sampleY = min(i32(shaderParams.height) - 1, max(0, sensorCentreY + i32(offsetY)));
-			// let offset : i32 = sampleY * i32(shaderParams.width) * 4 + sampleX * 4;
+			let offset : i32 = sampleY * i32(shaderParams.width) * 4 + sampleX * 4;
 			sum = sum + dot(vec4<f32>(1.0), vec4<f32>(
 				textureLoad(SourceTexture, vec2<i32>(sampleX, sampleY)),
 			));

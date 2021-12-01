@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, time::Instant};
 
 use rand::Rng;
 use wgpu::{util::DeviceExt, BindGroup, Device, MapMode};
@@ -8,10 +8,10 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
 };
-const NUM_AGENTS: u32 = 10_000;
+const NUM_AGENTS: u32 = 100_000;
 const AGENTS_PER_GROUP: u32 = 64;
-const SIM_WIDTH: u32 = 1000;
-const SIM_HEIGHT: u32 = 500;
+const SIM_WIDTH: u32 = 1300;
+const SIM_HEIGHT: u32 = 800;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -68,6 +68,7 @@ struct State {
     time: f32,
     ping_texture: wgpu::Texture,
     pong_texture: wgpu::Texture,
+    then: Instant,
 }
 
 #[repr(C)]
@@ -295,10 +296,10 @@ impl State {
                 | wgpu::BufferUsages::MAP_WRITE,
         });
         let species_param_data = SpeciesSettings {
-            moveSpeed: 1.0,
-            turnSpeed: 0.1,
-            sensorAngleDegrees: 45.0,
-            sensorOffsetDst: 0.1,
+            moveSpeed: 100.0,
+            turnSpeed: -6.0,
+            sensorAngleDegrees: 112.0,
+            sensorOffsetDst: 20.0,
             sensorSize: 1.0,
             colourR: 0.0,
             colourG: 1.0,
@@ -349,16 +350,14 @@ impl State {
                         },
                         count: None,
                     },
-                    // Texture
+                    // Storage Texture
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(
-                                (SIM_WIDTH * SIM_HEIGHT * 4 * 4) as _,
-                            ),
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::Rgba32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
                     },
@@ -529,7 +528,9 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: texture_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(
+                        &ping_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
                 },
             ],
             label: None,
@@ -601,7 +602,8 @@ impl State {
             shader_param_buffer,
             time: 0.0,
             ping_texture,
-            pong_texture
+            pong_texture,
+            then: Instant::now(),
         }
     }
 
@@ -633,8 +635,8 @@ impl State {
         let mut rng = rand::thread_rng();
         let now = std::time::Instant::now();
         for agent in &mut agents {
-            agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32);
-            agent.posY = rng.gen_range(-(SIM_HEIGHT as f32)..SIM_HEIGHT as f32);
+            agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
+            agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
             agent.angle = rng.gen_range(0.0..360.0);
         }
 
@@ -686,7 +688,7 @@ impl State {
             width: SIM_WIDTH as _,
             height: SIM_HEIGHT as _,
             trailWeight: 0.5,
-            deltaTime: 0.33,
+            deltaTime: Instant::now().checked_duration_since(self.then).unwrap().as_secs_f32(),
             time: self.time,
         };
         let shader_param_slice = &[shader_param_data];
@@ -699,6 +701,7 @@ impl State {
         buffer_slice.get_mapped_range_mut()[..shader_param_slice.len()]
             .copy_from_slice(shader_param_slice);
         self.shader_param_buffer.unmap();
+        self.then = Instant::now();
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {

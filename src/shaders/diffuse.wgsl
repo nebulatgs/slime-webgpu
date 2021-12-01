@@ -14,8 +14,8 @@
 [[stage(compute), workgroup_size(16,16,1)]]
 fn diffuse([[builtin(global_invocation_id)]] id: vec3<u32>)
 {
-    let diffuseRate = 0.8;
-    let decayRate = 0.07;
+    let diffuseRate = 5.0;
+    let decayRate = 0.75;
 	if (id.x < 0u || id.x >= u32(shaderParams.width) || id.y < 0u || id.y >= u32(shaderParams.height)) {
 		return;
 	}
