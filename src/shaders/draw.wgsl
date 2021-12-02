@@ -20,7 +20,7 @@ struct Agent {
 [[group(0), binding(2)]] var TargetTextureSampler : sampler;
 [[group(0), binding(3)]] var TargetTexture : texture_storage_2d<rgba32float, write>;
 
-[[stage(compute), workgroup_size(16,1,1)]]
+[[stage(compute), workgroup_size(256,1,1)]]
 fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
     if (id.x >= u32(shaderParams.numAgents)) {
 		return;
@@ -31,5 +31,5 @@ fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	let cellX : i32 = i32(agent.posX);
 	let cellY : i32 = i32(agent.posY);
 
-	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(0.1, 0.6, 0.5, 1.));
+	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(pow(0.008, 2.2), pow(0.992, 2.2), pow(0.592, 2.2), 1.));
 }

@@ -8,12 +8,12 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Fullscreen, Window, WindowBuilder},
 };
-static NUM_AGENTS: u32 = 1 << 14;
-static AGENTS_PER_GROUP: u32 = 256;
-static AGENTS_PER_DRAW_GROUP: u32 = 16;
+static NUM_AGENTS: u32 = 1 << 19;
+static AGENTS_PER_GROUP: u32 = 1024;
+static AGENTS_PER_DRAW_GROUP: u32 = 256;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
-static SIM_WIDTH: u32 = (1366.0 * SCALE_DOWN_FACTOR) as _;
-static SIM_HEIGHT: u32 = (768.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_WIDTH: u32 = (1920.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_HEIGHT: u32 = (1080.0 * SCALE_DOWN_FACTOR) as _;
 static SAMPLE_COUNT: u32 = 4;
 
 #[repr(C)]
@@ -123,7 +123,7 @@ impl State {
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -347,7 +347,7 @@ impl State {
                 | wgpu::BufferUsages::MAP_WRITE,
         });
         let species_param_data = SpeciesSettings {
-            moveSpeed: 50.0,
+            moveSpeed: 25.0,
             turnSpeed: -6.0,
             sensorAngleDegrees: 112.0,
             sensorOffsetDst: 50.0,
@@ -695,18 +695,18 @@ impl State {
         let mut rng = rand::thread_rng();
         let now = std::time::Instant::now();
         for agent in &mut agents {
-            static R: f32 = 100.0;
-            static CENTER_X: f32 = SIM_WIDTH as f32 / 2.0;
-            static CENTER_Y: f32 = SIM_HEIGHT as f32 / 2.0;
-            static RAD_TO_DEG: f32 = 180.0 * std::f32::consts::FRAC_1_PI;
+            static R: f64 = 300.0;
+            static CENTER_X: f64 = SIM_WIDTH as f64 / 2.0;
+            static CENTER_Y: f64 = SIM_HEIGHT as f64 / 2.0;
+            static RAD_TO_DEG: f64 = 180.0 * std::f64::consts::FRAC_1_PI;
 
-            let r = R * rng.gen_range::<f32, _>(0.0..1.0).sqrt();
-            let theta = rng.gen_range::<f32, _>(0.0..1.0) * 2.0 * std::f32::consts::PI;
-            agent.posX = CENTER_X + r * theta.cos();
-            agent.posY = CENTER_Y + r * theta.sin();
+            let r = R * rng.gen_range::<f64, _>(0.0..1.0).sqrt();
+            let theta = rng.gen_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
+            agent.posX = (CENTER_X + r * theta.cos()) as f32;
+            agent.posY = (CENTER_Y + r * theta.sin()) as f32;
             // agent.posX = 100.0;
             // agent.posY = 100.0;
-            agent.angle = theta * RAD_TO_DEG + 180.0;
+            agent.angle = ((theta + std::f64::consts::PI) * RAD_TO_DEG) as f32;
             // agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
             // agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
         }

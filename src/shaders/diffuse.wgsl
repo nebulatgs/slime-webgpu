@@ -51,8 +51,9 @@ fn diffuse([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	blurredCol = originalCol * (1.0 - diffuseWeight) + blurredCol * (diffuseWeight);
 	let decayAmount = decayRate * decayRate * shaderParams.deltaTime;
 	var hslCol = rgb2hsv(blurredCol.rgb);
-	hslCol.b = hslCol.b - decayAmount;
-	hslCol.r = clamp(hslCol.r + decayAmount, 0.0, 0.6);
+	hslCol.b = clamp(hslCol.b / 1.01, 0.0, 1.0);
+	hslCol.g = clamp(hslCol.g / 0.9, 0.0, 1.0);
+	hslCol.r = clamp(hslCol.r + decayAmount * 2.0, 0.0, 0.638);
 	let decayedCol = hsv2rgb(hslCol);
 	//DiffusedTrailMap[id.xy] = blurredCol * saturate(1 - decayRate * deltaTime);
 	textureStore(PongTexture, vec2<i32>(id.xy), max(vec4<f32>(0.0), vec4<f32>(decayedCol, 1.0)));
