@@ -20,7 +20,7 @@ struct Agent {
 [[group(0), binding(2)]] var TargetTextureSampler : sampler;
 [[group(0), binding(3)]] var TargetTexture : texture_storage_2d<rgba32float, write>;
 
-[[stage(compute), workgroup_size(256,1,1)]]
+[[stage(compute), workgroup_size(4,1,1)]]
 fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
     if (id.x >= u32(shaderParams.numAgents)) {
 		return;

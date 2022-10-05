@@ -8,9 +8,10 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Fullscreen, Window, WindowBuilder},
 };
-static NUM_AGENTS: u32 = 1 << 19;
-static AGENTS_PER_GROUP: u32 = 1024;
-static AGENTS_PER_DRAW_GROUP: u32 = 256;
+static NUM_AGENTS: u32 = 1 << 21;
+static AGENTS_PER_GROUP: u32 = 8;
+static AGENTS_PER_DRAW_GROUP: u32 = 4;
+static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
 static SIM_WIDTH: u32 = (1920.0 * SCALE_DOWN_FACTOR) as _;
 static SIM_HEIGHT: u32 = (1080.0 * SCALE_DOWN_FACTOR) as _;
@@ -812,7 +813,11 @@ impl State {
                 });
             compute_diffuse_pass.set_pipeline(&self.compute_diffuse_pipeline);
             compute_diffuse_pass.set_bind_group(0, &self.compute_diffuse_bind_group, &[]);
-            compute_diffuse_pass.dispatch(SIM_WIDTH / 16, SIM_HEIGHT / 16, 1);
+            compute_diffuse_pass.dispatch(
+                SIM_WIDTH / DIFFUSE_TILE_SIZE,
+                SIM_HEIGHT / DIFFUSE_TILE_SIZE,
+                1,
+            );
         }
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
