@@ -10,7 +10,7 @@ struct Agent {
 	posX: f32;
 	posY: f32;
 	angle: f32;
-	intensity: f32;
+	//intensity: f32;
 };
 [[block]]struct Agents {
     agents: array<Agent>;
@@ -37,5 +37,5 @@ fn main([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	let cellY : i32 = i32(agent.posY);
 
 //	textureStore(TargetTexture, vec2<i32>(cellX, cellY), col);
-	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(vec3<f32>(0.009 + agent.intensity), 1.0));
+//	textureStore(TargetTexture, vec2<i32>(cellX, cellY), vec4<f32>(vec3<f32>(0.009 + agent.intensity), 1.0));
 }

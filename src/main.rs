@@ -13,8 +13,8 @@ static AGENTS_PER_GROUP: u32 = 8;
 static AGENTS_PER_DRAW_GROUP: u32 = 2;
 static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
-static SIM_WIDTH: u32 = (2560.0 * SCALE_DOWN_FACTOR) as _;
-static SIM_HEIGHT: u32 = (1440.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_WIDTH: u32 = (1920.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_HEIGHT: u32 = (1080.0 * SCALE_DOWN_FACTOR) as _;
 static SAMPLE_COUNT: u32 = 4;
 
 #[repr(C)]
@@ -60,7 +60,7 @@ struct Agent {
     posX: f32,
     posY: f32,
     angle: f32,
-    intensity: f32,
+    // intensity: f32,
 }
 struct State {
     surface: wgpu::Surface,
@@ -131,7 +131,7 @@ impl State {
         )));
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let instance = wgpu::Instance::new(wgpu::Backends::VULKAN);
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -364,7 +364,7 @@ impl State {
             turnSpeed: -25.0,
             sensorAngleDegrees: 112.0,
             sensorOffsetDst: 50.0,
-            sensorSize: 1.0,
+            sensorSize: 0.0,
             colourR: 0.0,
             colourG: 1.0,
             colourB: 0.0,
@@ -421,7 +421,7 @@ impl State {
                         binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            access: wgpu::StorageTextureAccess::ReadWrite,
                             format: wgpu::TextureFormat::Rgba32Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
@@ -731,7 +731,7 @@ impl State {
                 posX: 0.0,
                 posY: 0.0,
                 angle: 0.0,
-                intensity: 0.0,
+                // intensity: 0.0,
             };
             NUM_AGENTS as _
         ];
@@ -909,7 +909,7 @@ impl State {
         self.then = Instant::now();
     }
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    fn draw(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -920,35 +920,6 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute Pass"),
-            });
-            compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            compute_pass.dispatch(NUM_AGENTS / AGENTS_PER_GROUP, 1, 1);
-        }
-        {
-            let mut compute_draw_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute Draw Pass"),
-            });
-            compute_draw_pass.set_pipeline(&self.compute_draw_pipeline);
-            compute_draw_pass.set_bind_group(0, &self.compute_draw_bind_group, &[]);
-            compute_draw_pass.dispatch(NUM_AGENTS / AGENTS_PER_DRAW_GROUP, 1, 1);
-        }
-        {
-            let mut compute_diffuse_pass =
-                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Compute Diffuse Pass"),
-                });
-            compute_diffuse_pass.set_pipeline(&self.compute_diffuse_pipeline);
-            compute_diffuse_pass.set_bind_group(0, &self.compute_diffuse_bind_group, &[]);
-            compute_diffuse_pass.dispatch(
-                SIM_WIDTH / DIFFUSE_TILE_SIZE,
-                SIM_HEIGHT / DIFFUSE_TILE_SIZE,
-                1,
-            );
-        }
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -978,11 +949,52 @@ impl State {
                 label: Some("main"),
             });
             render_pass.execute_bundles(std::iter::once(&self.bundle));
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
 
-            // render_pass.set_pipeline(&self.render_pipeline);
-            // render_pass.set_bind_group(0, &self.render_bind_group, &[]);
-            // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            // render_pass.draw(0..VERTICES.len() as _, 0..1);
+        // render_pass.set_pipeline(&self.render_pipeline);
+        // render_pass.set_bind_group(0, &self.render_bind_group, &[]);
+        // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        // render_pass.draw(0..VERTICES.len() as _, 0..1);
+        Ok(())
+    }
+
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Command Encoder"),
+            });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            });
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            compute_pass.dispatch(NUM_AGENTS / AGENTS_PER_GROUP, 1, 1);
+        }
+        // {
+        //     let mut compute_draw_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        //         label: Some("Compute Draw Pass"),
+        //     });
+        //     compute_draw_pass.set_pipeline(&self.compute_draw_pipeline);
+        //     compute_draw_pass.set_bind_group(0, &self.compute_draw_bind_group, &[]);
+        //     compute_draw_pass.dispatch(NUM_AGENTS / AGENTS_PER_DRAW_GROUP, 1, 1);
+        // }
+        {
+            let mut compute_diffuse_pass =
+                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Compute Diffuse Pass"),
+                });
+            compute_diffuse_pass.set_pipeline(&self.compute_diffuse_pipeline);
+            compute_diffuse_pass.set_bind_group(0, &self.compute_diffuse_bind_group, &[]);
+            compute_diffuse_pass.dispatch(
+                SIM_WIDTH / DIFFUSE_TILE_SIZE,
+                SIM_HEIGHT / DIFFUSE_TILE_SIZE,
+                1,
+            );
         }
         {
             encoder.copy_texture_to_texture(
@@ -997,7 +1009,6 @@ impl State {
         }
         // submit will accept anything that implements IntoIter
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
 
         Ok(())
     }
@@ -1019,8 +1030,7 @@ fn main() {
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::RedrawRequested(_) => {
-                state.update();
-                match state.render() {
+                match state.draw() {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
@@ -1033,6 +1043,16 @@ fn main() {
             Event::MainEventsCleared => {
                 // RedrawRequested will only trigger once, unless we manually
                 // request it.
+                state.update();
+                match state.render() {
+                    Ok(_) => {}
+                    // Reconfigure the surface if lost
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                    // All other errors (Outdated, Timeout) should be resolved by the next frame
+                    Err(e) => eprintln!("{:?}", e),
+                }
                 window.request_redraw();
             }
             Event::WindowEvent {

@@ -36,13 +36,14 @@ fn diffuse([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	}
 
 	var sum = vec4<f32>(0.0);
-	var originalCol = textureLoad(PingTexture, vec2<i32>(id.xy));
+	let originalPix = textureLoad(PingTexture, vec2<i32>(id.xy));
+	var originalCol = vec4<f32>(vec3<f32>(originalPix.b), 1.0);
 	// 3x3 blur
 	for (var offsetX = -1; offsetX <= 1; offsetX = offsetX + 1) {
 		for (var offsetY = -1; offsetY <= 1; offsetY = offsetY + 1) {
 			var sampleX = min(i32(shaderParams.width) - 1, max(0, i32(id.x) + offsetX));
 			var sampleY = min(i32(shaderParams.height) - 1, max(0, i32(id.y) + offsetY));
-			sum = sum + textureLoad(PingTexture, vec2<i32>(sampleX,sampleY));
+			sum = sum + vec4<f32>(vec3<f32>(textureLoad(PingTexture, vec2<i32>(sampleX,sampleY)).b), 1.0);
 		}
 	}
 
@@ -58,6 +59,6 @@ fn diffuse([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	//let decayedCol = hsv2rgb(hslCol);
 	let decayedCol = blurredCol.rgb / vec3<f32>(1.01);
 	//DiffusedTrailMap[id.xy] = blurredCol * saturate(1 - decayRate * deltaTime);
-	textureStore(PongTexture, vec2<i32>(id.xy), max(vec4<f32>(0.0), vec4<f32>(decayedCol, 1.0)));
+	textureStore(PongTexture, vec2<i32>(id.xy), max(vec4<f32>(0.0), vec4<f32>(decayedCol.r, 0.0, decayedCol.r, 1.0)));
 }
 
