@@ -10,11 +10,11 @@ use winit::{
 };
 static NUM_AGENTS: u32 = 1 << 21;
 static AGENTS_PER_GROUP: u32 = 8;
-static AGENTS_PER_DRAW_GROUP: u32 = 4;
+static AGENTS_PER_DRAW_GROUP: u32 = 2;
 static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
-static SIM_WIDTH: u32 = (1920.0 * SCALE_DOWN_FACTOR) as _;
-static SIM_HEIGHT: u32 = (1080.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_WIDTH: u32 = (2560.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_HEIGHT: u32 = (1440.0 * SCALE_DOWN_FACTOR) as _;
 static SAMPLE_COUNT: u32 = 4;
 
 #[repr(C)]
@@ -60,6 +60,7 @@ struct Agent {
     posX: f32,
     posY: f32,
     angle: f32,
+    intensity: f32,
 }
 struct State {
     surface: wgpu::Surface,
@@ -77,6 +78,7 @@ struct State {
     compute_diffuse_pipeline: wgpu::ComputePipeline,
     compute_diffuse_bind_group: BindGroup,
     shader_param_buffer: wgpu::Buffer,
+    species_param_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     time: f32,
     ping_texture: wgpu::Texture,
@@ -84,6 +86,8 @@ struct State {
     then: Instant,
     bundle: wgpu::RenderBundle,
     msaa_framebuffer: wgpu::TextureView,
+    shader_param_data: ShaderParams,
+    species_param_data: SpeciesSettings,
 }
 
 #[repr(C)]
@@ -117,7 +121,14 @@ impl State {
     // Creating some of the wgpu types requires async code
     async fn new(window: &Window) -> Self {
         let size = window.inner_size();
-
+        window.set_fullscreen(Some(Fullscreen::Exclusive(
+            window
+                .primary_monitor()
+                .unwrap()
+                .video_modes()
+                .next()
+                .unwrap(),
+        )));
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
         let instance = wgpu::Instance::new(wgpu::Backends::all());
@@ -141,12 +152,13 @@ impl State {
             )
             .await
             .unwrap();
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface.get_preferred_format(&adapter).unwrap(),
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: wgpu::PresentMode::Mailbox,
         };
         surface.configure(&device, &config);
         let msaa_framebuffer =
@@ -348,8 +360,8 @@ impl State {
                 | wgpu::BufferUsages::MAP_WRITE,
         });
         let species_param_data = SpeciesSettings {
-            moveSpeed: 25.0,
-            turnSpeed: -6.0,
+            moveSpeed: 50.0,
+            turnSpeed: -25.0,
             sensorAngleDegrees: 112.0,
             sensorOffsetDst: 50.0,
             sensorSize: 1.0,
@@ -364,7 +376,9 @@ impl State {
         let species_param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Species Parameter Buffer"),
             contents: species_param_slice,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::MAP_WRITE,
         });
         let compute_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -513,6 +527,7 @@ impl State {
         let compute_draw_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("compute draw"),
+                // bind_group_layouts: &[&compute_draw_bind_group_layout],
                 bind_group_layouts: &[&compute_draw_bind_group_layout],
                 push_constant_ranges: &[],
             });
@@ -611,6 +626,30 @@ impl State {
             ],
             label: None,
         });
+        // let compute_draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //     layout: &compute_draw_pipeline.get_bind_group_layout(0),
+        //     entries: &[
+        //         wgpu::BindGroupEntry {
+        //             binding: 0,
+        //             resource: shader_param_buffer.as_entire_binding(),
+        //         },
+        //         wgpu::BindGroupEntry {
+        //             binding: 1,
+        //             resource: species_param_buffer.as_entire_binding(),
+        //         },
+        //         wgpu::BindGroupEntry {
+        //             binding: 2,
+        //             resource: agent_buffer.as_entire_binding(),
+        //         },
+        //         wgpu::BindGroupEntry {
+        //             binding: 3,
+        //             resource: wgpu::BindingResource::TextureView(
+        //                 &ping_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        //             ),
+        //         },
+        //     ],
+        //     label: None,
+        // });
         let compute_diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &compute_diffuse_pipeline.get_bind_group_layout(0),
             entries: &[
@@ -651,12 +690,15 @@ impl State {
             compute_diffuse_bind_group,
             vertex_buffer,
             shader_param_buffer,
+            species_param_buffer,
             time: shader_param_data.time,
             ping_texture,
             pong_texture,
             then: Instant::now(),
             bundle,
             msaa_framebuffer,
+            shader_param_data,
+            species_param_data,
         }
     }
     fn create_multisampled_framebuffer(
@@ -688,7 +730,8 @@ impl State {
             Agent {
                 posX: 0.0,
                 posY: 0.0,
-                angle: 0.0
+                angle: 0.0,
+                intensity: 0.0,
             };
             NUM_AGENTS as _
         ];
@@ -705,9 +748,10 @@ impl State {
             let theta = rng.gen_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
             agent.posX = (CENTER_X + r * theta.cos()) as f32;
             agent.posY = (CENTER_Y + r * theta.sin()) as f32;
+            let angle = rng.gen_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
             // agent.posX = 100.0;
             // agent.posY = 100.0;
-            agent.angle = ((theta + std::f64::consts::PI) * RAD_TO_DEG) as f32;
+            agent.angle = ((angle + std::f64::consts::PI) * RAD_TO_DEG) as f32;
             // agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
             // agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
         }
@@ -736,21 +780,106 @@ impl State {
 
     fn input(&mut self, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::CursorMoved {
+            WindowEvent::KeyboardInput {
                 device_id: _,
-                position,
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::D),
+                        ..
+                    },
                 ..
             } => {
-                self.clear_color = wgpu::Color {
-                    r: position.x as f64 / self.size.width as f64,
-                    g: position.y as f64 / self.size.height as f64,
-                    b: 1.0,
-                    a: 1.0,
-                };
+                self.species_param_data.moveSpeed += 1.0;
+                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::A),
+                        ..
+                    },
+                ..
+            } => {
+                self.species_param_data.moveSpeed =
+                    (self.species_param_data.moveSpeed - 1.0).max(0.0);
+                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                true
+            }
+
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::Q),
+                        ..
+                    },
+                ..
+            } => {
+                self.species_param_data.turnSpeed =
+                    (self.species_param_data.turnSpeed + 1.0).min(0.0);
+                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::E),
+                        ..
+                    },
+                ..
+            } => {
+                self.species_param_data.turnSpeed -= 1.0;
+                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::S),
+                        ..
+                    },
+                ..
+            } => {
+                self.species_param_data.sensorOffsetDst =
+                    (self.species_param_data.sensorOffsetDst - 1.0).max(0.0);
+                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::W),
+                        ..
+                    },
+                ..
+            } => {
+                self.species_param_data.sensorOffsetDst += 1.0;
+                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
             _ => false,
         }
+    }
+
+    fn update_buffer<T: bytemuck::Pod>(&self, buffer: &wgpu::Buffer, data: &T) {
+        let buffer_slice = buffer.slice(..);
+        let buffer_future = buffer_slice.map_async(wgpu::MapMode::Write);
+        self.device.poll(wgpu::Maintain::Wait);
+        pollster::block_on(buffer_future).unwrap();
+        let bytes = bytemuck::bytes_of(data);
+        buffer_slice.get_mapped_range_mut()[..bytes.len()].copy_from_slice(bytes);
+        buffer.unmap();
     }
 
     fn update(&mut self) {
@@ -766,16 +895,17 @@ impl State {
                 .as_secs_f32(),
             time: self.time,
         };
-        let shader_param_slice = &[shader_param_data];
-        let shader_param_slice: &[u8] = bytemuck::cast_slice(shader_param_slice);
+        self.update_buffer(&self.shader_param_buffer, &shader_param_data);
+        // let shader_param_slice = &[shader_param_data];
+        // let shader_param_slice: &[u8] = bytemuck::cast_slice(shader_param_slice);
 
-        let buffer_slice = self.shader_param_buffer.slice(..);
-        let buffer_future = buffer_slice.map_async(wgpu::MapMode::Write);
-        self.device.poll(wgpu::Maintain::Wait);
-        pollster::block_on(buffer_future).unwrap();
-        buffer_slice.get_mapped_range_mut()[..shader_param_slice.len()]
-            .copy_from_slice(shader_param_slice);
-        self.shader_param_buffer.unmap();
+        // let buffer_slice = self.shader_param_buffer.slice(..);
+        // let buffer_future = buffer_slice.map_async(wgpu::MapMode::Write);
+        // self.device.poll(wgpu::Maintain::Wait);
+        // pollster::block_on(buffer_future).unwrap();
+        // buffer_slice.get_mapped_range_mut()[..shader_param_slice.len()]
+        //     .copy_from_slice(shader_param_slice);
+        // self.shader_param_buffer.unmap();
         self.then = Instant::now();
     }
 
@@ -827,7 +957,7 @@ impl State {
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
-                        store: true,
+                        store: false,
                     },
                 }],
                 depth_stencil_attachment: None,

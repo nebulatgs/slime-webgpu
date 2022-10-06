@@ -26,10 +26,13 @@ fn vs_main(
 };
 [[group(0), binding(2)]] var<uniform> renderParams: RenderParams;
 
+// let col : vec4<f32> = vec4<f32>(0.00002436677, 0.98248443487, 0.31557875231, 1.);
+let a : f32 = 2.;
 [[stage(fragment)]]
 fn fs_main(in: VertexOutput) -> [[location(0)]] vec4<f32> {
-    var thjing = textureLoad(SourceTexture, vec2<i32>(in.clip_position * renderParams.scaleDownFactor).xy);
-    return thjing;
+    var thing = textureLoad(SourceTexture, vec2<i32>(in.clip_position * renderParams.scaleDownFactor).xy);
+    
+    return vec4<f32>(vec3<f32>((pow(a, thing.r) - 1.0) / (a - 1.0)), 1.0);
     // return in.clip_position / vec4<f32>(1000.0);
 }
  

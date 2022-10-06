@@ -15,6 +15,7 @@ struct Agent {
 	posX: f32;
 	posY: f32;
 	angle: f32;
+	intensity: f32;
 };
 [[block]]struct Agents {
     data: array<Agent>;
@@ -82,6 +83,9 @@ fn scaleToRange01(state: u32) -> f32 {
     return f32(state) / 4294967295.0;
 }
 
+let PI_OVER_180 : f32 = 0.01745329251;
+let TWO_PI : f32 = 6.28318530718;
+
 
 [[stage(compute), workgroup_size(8,1,1)]]
 fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
@@ -92,20 +96,19 @@ fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 
 
 	var agent = agents.data[id.x];
-	let position = vec2<f32>(agent.posX, agent.posY);
-	var pos = position;
+	let pos = vec2<f32>(agent.posX, agent.posY);
 
 	var random = triple32(u32(pos.y * f32(shaderParams.width) + pos.x) + triple32(id.x + u32(shaderParams.time * 100000.0)));
 
 	// Steer based on sensory data
-	var sensorAngleRad = speciesSettings.sensorAngleDegrees * (3.1415 / 180.0);
+	var sensorAngleRad = speciesSettings.sensorAngleDegrees * PI_OVER_180;
 	var weightForward = sense(agent, speciesSettings, 0.0);
 	var weightLeft = sense(agent, speciesSettings, sensorAngleRad);
 	var weightRight = sense(agent, speciesSettings, -sensorAngleRad);
 
 	
 	var randomSteerStrength = scaleToRange01(random);
-	var turnSpeed = speciesSettings.turnSpeed * 2.0 * 3.1415;
+	var turnSpeed = speciesSettings.turnSpeed * TWO_PI;
 
 	// Continue in same direction
 	if (weightForward > weightLeft && weightForward > weightRight) {
@@ -126,13 +129,13 @@ fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 
 	// Update position
 	var direction = vec2<f32>(cos(agent.angle), sin(agent.angle));
-	var newPos: vec2<f32> = position + direction * shaderParams.deltaTime * speciesSettings.moveSpeed;
+	var newPos: vec2<f32> = pos + direction * shaderParams.deltaTime * speciesSettings.moveSpeed;
 
 	
 	// Clamp position to map boundaries, and pick new random move dir if hit boundary
 	if (newPos.x < 0.0 || newPos.x >= f32(shaderParams.width) || newPos.y < 0.0 || newPos.y >= f32(shaderParams.height)) {
 		random = triple32(random);
-		var randomAngle = scaleToRange01(random) * 2.0 * 3.1415;
+		var randomAngle = scaleToRange01(random) * TWO_PI;
 
 		newPos.x = min(f32(shaderParams.width - 1.0),max(0.0, newPos.x));
 		newPos.y = min(f32(shaderParams.height - 1.0),max(0.0, newPos.y));
@@ -149,4 +152,5 @@ fn update([[builtin(global_invocation_id)]] id: vec3<u32>) {
 	// }
 	agents.data[id.x].posX = newPos.x;
 	agents.data[id.x].posY = newPos.y;
+	agents.data[id.x].intensity = textureLoad(SourceTexture, vec2<i32>(i32(newPos.x), i32(newPos.y))).r;
 }
