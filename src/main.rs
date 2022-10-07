@@ -8,9 +8,8 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Fullscreen, Window, WindowBuilder},
 };
-static NUM_AGENTS: u32 = 1 << 21;
-static AGENTS_PER_GROUP: u32 = 8;
-static AGENTS_PER_DRAW_GROUP: u32 = 2;
+static NUM_AGENTS: u32 = (1 << 21) - 32;
+static AGENTS_PER_GROUP: u32 = 32;
 static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
 static SIM_WIDTH: u32 = (1920.0 * SCALE_DOWN_FACTOR) as _;
@@ -73,8 +72,6 @@ struct State {
     render_bind_group: BindGroup,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: BindGroup,
-    compute_draw_pipeline: wgpu::ComputePipeline,
-    compute_draw_bind_group: BindGroup,
     compute_diffuse_pipeline: wgpu::ComputePipeline,
     compute_diffuse_bind_group: BindGroup,
     shader_param_buffer: wgpu::Buffer,
@@ -155,10 +152,10 @@ impl State {
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_preferred_format(&adapter).unwrap(),
+            format: surface.get_supported_formats(&adapter)[0],
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Mailbox,
+            present_mode: wgpu::PresentMode::AutoVsync,
         };
         surface.configure(&device, &config);
         let msaa_framebuffer =
@@ -166,7 +163,7 @@ impl State {
 
         let clear_color = wgpu::Color::BLACK;
 
-        let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Render Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader.wgsl").into()),
         });
@@ -220,10 +217,7 @@ impl State {
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler {
-                            comparison: false,
-                            filtering: false,
-                        },
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                     // Storage Texture
@@ -260,6 +254,7 @@ impl State {
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
+            multiview: None,
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main", // 1.
@@ -273,12 +268,12 @@ impl State {
                 // 3.
                 module: &shader,
                 entry_point: "fs_main",
-                targets: &[wgpu::ColorTargetState {
+                targets: &[Some(wgpu::ColorTargetState {
                     // 4.
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
-                }],
+                })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList, // 1.
@@ -288,7 +283,7 @@ impl State {
                 // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
                 // Requires Features::DEPTH_CLAMPING
-                clamp_depth: false,
+                unclipped_depth: false,
                 // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
@@ -330,7 +325,8 @@ impl State {
         let mut encoder =
             device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
                 label: None,
-                color_formats: &[config.format],
+                multiview: None,
+                color_formats: &[Some(config.format)],
                 depth_stencil: None,
                 sample_count: SAMPLE_COUNT,
             });
@@ -430,55 +426,6 @@ impl State {
                 ],
                 label: None,
             });
-        let compute_draw_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    // Shader Parameter Buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(shader_param_slice.len() as _),
-                        },
-                        count: None,
-                    },
-                    // Agents Buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new((NUM_AGENTS * 4 * 3) as _),
-                        },
-                        count: None,
-                    },
-                    // Texture Sampler
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler {
-                            comparison: false,
-                            filtering: false,
-                        },
-                        count: None,
-                    },
-                    // Storage Texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba32Float,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-                label: None,
-            });
         let compute_diffuse_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -524,13 +471,6 @@ impl State {
                 bind_group_layouts: &[&compute_bind_group_layout],
                 push_constant_ranges: &[],
             });
-        let compute_draw_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("compute draw"),
-                // bind_group_layouts: &[&compute_draw_bind_group_layout],
-                bind_group_layouts: &[&compute_draw_bind_group_layout],
-                push_constant_ranges: &[],
-            });
         let compute_diffuse_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("compute diffuse"),
@@ -538,37 +478,20 @@ impl State {
                 push_constant_ranges: &[],
             });
         // // Compute shader pipeline
-        let compute_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/slime.wgsl").into()),
         });
-        let compute_draw_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: Some("Compute Draw Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/draw.wgsl").into()),
-        });
-        let compute_diffuse_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        let compute_diffuse_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Diffuse Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/diffuse.wgsl").into()),
         });
-        // let compute_pipeline_layout =
-        //     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        //         label: Some("Compute Pipeline Layout"),
-        //         bind_group_layouts: &[],
-        //         push_constant_ranges: &[],
-        //     });
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Compute Pipeline"),
             layout: Some(&compute_pipeline_layout),
             module: &compute_shader,
             entry_point: "update",
         });
-        let compute_draw_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Compute Draw Pipeline"),
-                layout: Some(&compute_draw_pipeline_layout),
-                module: &compute_draw_shader,
-                entry_point: "main",
-            });
         let compute_diffuse_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Compute Diffuse Pipeline"),
@@ -602,54 +525,6 @@ impl State {
             label: None,
         });
 
-        let compute_draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &compute_draw_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: shader_param_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: agent_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(
-                        &ping_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                },
-            ],
-            label: None,
-        });
-        // let compute_draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //     layout: &compute_draw_pipeline.get_bind_group_layout(0),
-        //     entries: &[
-        //         wgpu::BindGroupEntry {
-        //             binding: 0,
-        //             resource: shader_param_buffer.as_entire_binding(),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 1,
-        //             resource: species_param_buffer.as_entire_binding(),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 2,
-        //             resource: agent_buffer.as_entire_binding(),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 3,
-        //             resource: wgpu::BindingResource::TextureView(
-        //                 &ping_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-        //             ),
-        //         },
-        //     ],
-        //     label: None,
-        // });
         let compute_diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &compute_diffuse_pipeline.get_bind_group_layout(0),
             entries: &[
@@ -684,8 +559,6 @@ impl State {
             render_bind_group,
             compute_pipeline,
             compute_bind_group,
-            compute_draw_pipeline,
-            compute_draw_bind_group,
             compute_diffuse_pipeline,
             compute_diffuse_bind_group,
             vertex_buffer,
@@ -872,14 +745,14 @@ impl State {
         }
     }
 
-    fn update_buffer<T: bytemuck::Pod>(&self, buffer: &wgpu::Buffer, data: &T) {
+    fn update_buffer<T: bytemuck::Pod + Send + Sync>(&self, buffer: &wgpu::Buffer, data: &T) {
         let buffer_slice = buffer.slice(..);
-        let buffer_future = buffer_slice.map_async(wgpu::MapMode::Write);
+        buffer_slice.map_async(wgpu::MapMode::Write, Result::unwrap);
         self.device.poll(wgpu::Maintain::Wait);
-        pollster::block_on(buffer_future).unwrap();
         let bytes = bytemuck::bytes_of(data);
         buffer_slice.get_mapped_range_mut()[..bytes.len()].copy_from_slice(bytes);
         buffer.unmap();
+        // pollster::block_on(buffer_future).unwrap();
     }
 
     fn update(&mut self) {
@@ -896,16 +769,6 @@ impl State {
             time: self.time,
         };
         self.update_buffer(&self.shader_param_buffer, &shader_param_data);
-        // let shader_param_slice = &[shader_param_data];
-        // let shader_param_slice: &[u8] = bytemuck::cast_slice(shader_param_slice);
-
-        // let buffer_slice = self.shader_param_buffer.slice(..);
-        // let buffer_future = buffer_slice.map_async(wgpu::MapMode::Write);
-        // self.device.poll(wgpu::Maintain::Wait);
-        // pollster::block_on(buffer_future).unwrap();
-        // buffer_slice.get_mapped_range_mut()[..shader_param_slice.len()]
-        //     .copy_from_slice(shader_param_slice);
-        // self.shader_param_buffer.unmap();
         self.then = Instant::now();
     }
 
@@ -923,21 +786,22 @@ impl State {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
-                color_attachments: &[wgpu::RenderPassColorAttachment {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.msaa_framebuffer,
                     resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
                         store: false,
                     },
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
             let mut encoder =
                 self.device
                     .create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
                         label: None,
-                        color_formats: &[self.config.format],
+                        multiview: None,
+                        color_formats: &[Some(self.config.format)],
                         depth_stencil: None,
                         sample_count: SAMPLE_COUNT,
                     });
@@ -953,10 +817,6 @@ impl State {
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        // render_pass.set_pipeline(&self.render_pipeline);
-        // render_pass.set_bind_group(0, &self.render_bind_group, &[]);
-        // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        // render_pass.draw(0..VERTICES.len() as _, 0..1);
         Ok(())
     }
 
@@ -973,16 +833,8 @@ impl State {
             });
             compute_pass.set_pipeline(&self.compute_pipeline);
             compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            compute_pass.dispatch(NUM_AGENTS / AGENTS_PER_GROUP, 1, 1);
+            compute_pass.dispatch_workgroups(NUM_AGENTS / AGENTS_PER_GROUP, 1, 1);
         }
-        // {
-        //     let mut compute_draw_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        //         label: Some("Compute Draw Pass"),
-        //     });
-        //     compute_draw_pass.set_pipeline(&self.compute_draw_pipeline);
-        //     compute_draw_pass.set_bind_group(0, &self.compute_draw_bind_group, &[]);
-        //     compute_draw_pass.dispatch(NUM_AGENTS / AGENTS_PER_DRAW_GROUP, 1, 1);
-        // }
         {
             let mut compute_diffuse_pass =
                 encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -990,7 +842,7 @@ impl State {
                 });
             compute_diffuse_pass.set_pipeline(&self.compute_diffuse_pipeline);
             compute_diffuse_pass.set_bind_group(0, &self.compute_diffuse_bind_group, &[]);
-            compute_diffuse_pass.dispatch(
+            compute_diffuse_pass.dispatch_workgroups(
                 SIM_WIDTH / DIFFUSE_TILE_SIZE,
                 SIM_HEIGHT / DIFFUSE_TILE_SIZE,
                 1,
