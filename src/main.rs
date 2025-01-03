@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use clap::{arg, command, Parser};
 use rand::Rng;
 use wgpu::{util::DeviceExt, BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device};
 use winit::{
@@ -13,6 +14,15 @@ static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
 static SIM_WIDTH: u32 = (3840.0 * SCALE_DOWN_FACTOR) as _;
 static SIM_HEIGHT: u32 = (2160.0 * SCALE_DOWN_FACTOR) as _;
+
+/// Slime Simulation
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Enable VSync
+    #[arg(long)]
+    vsync: bool,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -88,6 +98,7 @@ struct State {
     scaled_texture_bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
+    args: Args,
 }
 
 #[repr(C)]
@@ -119,7 +130,7 @@ const VERTICES: &[Vertex] = &[
 
 impl State {
     // Creating some of the wgpu types requires async code
-    async fn new(window: &Window) -> Self {
+    async fn new(window: &Window, args: Args) -> Self {
         let size = window.inner_size();
         // window.set_fullscreen(Some(Fullscreen::Exclusive(
         //     window
@@ -154,12 +165,18 @@ impl State {
             .await
             .unwrap();
 
+        let vsync_mode = if args.vsync {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface.get_supported_formats(&adapter)[0],
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: vsync_mode,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
         };
         surface.configure(&device, &config);
@@ -681,6 +698,7 @@ impl State {
         });
 
         Self {
+            args,
             surface,
             device,
             queue,
@@ -1064,7 +1082,9 @@ fn get_projection_matrix(
 
     cgmath::ortho(-width, width, -height, height, -1.0, 1.0).into()
 }
+
 fn main() {
+    let args = Args::parse();
     env_logger::init();
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -1079,8 +1099,8 @@ fn main() {
         .build(&event_loop)
         .unwrap();
     // window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-    let mut state = pollster::block_on(State::new(&window));
-    state.resize(window.inner_size());
+    let mut state = pollster::block_on(State::new(&window, args));
+    state.resize(state.size);
 
     event_loop.run(move |event, _, control_flow| {
         match event {
