@@ -1,20 +1,18 @@
 use std::time::Instant;
 
 use rand::Rng;
-use wgpu::{util::DeviceExt, BindGroup, Device};
+use wgpu::{util::DeviceExt, BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device};
 use winit::{
-    dpi::PhysicalSize,
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::{Fullscreen, Window, WindowBuilder},
 };
-static NUM_AGENTS: u32 = (1 << 21) - 32;
-static AGENTS_PER_GROUP: u32 = 32;
+static NUM_AGENTS: u32 = (1 << 23) - 32;
+static AGENTS_PER_GROUP: u32 = 128;
 static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
-static SIM_WIDTH: u32 = (1920.0 * SCALE_DOWN_FACTOR) as _;
-static SIM_HEIGHT: u32 = (1080.0 * SCALE_DOWN_FACTOR) as _;
-static SAMPLE_COUNT: u32 = 4;
+static SIM_WIDTH: u32 = (3840.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_HEIGHT: u32 = (2160.0 * SCALE_DOWN_FACTOR) as _;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -85,6 +83,12 @@ struct State {
     msaa_framebuffer: wgpu::TextureView,
     shader_param_data: ShaderParams,
     species_param_data: SpeciesSettings,
+
+    sim_texture_view: wgpu::TextureView,
+    scaling_pipeline: wgpu::RenderPipeline,
+    scaled_texture_bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
 }
 
 #[repr(C)]
@@ -118,17 +122,18 @@ impl State {
     // Creating some of the wgpu types requires async code
     async fn new(window: &Window) -> Self {
         let size = window.inner_size();
-        window.set_fullscreen(Some(Fullscreen::Exclusive(
-            window
-                .primary_monitor()
-                .unwrap()
-                .video_modes()
-                .next()
-                .unwrap(),
-        )));
+        // window.set_fullscreen(Some(Fullscreen::Exclusive(
+        //     window
+        //         .primary_monitor()
+        //         .unwrap()
+        //         .video_modes()
+        //         .next()
+        //         .unwrap(),
+        // )));
+        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = wgpu::Instance::new(wgpu::Backends::VULKAN);
+        let instance = wgpu::Instance::new(wgpu::Backends::METAL);
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -156,6 +161,7 @@ impl State {
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::AutoVsync,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
         };
         surface.configure(&device, &config);
         let msaa_framebuffer =
@@ -288,18 +294,16 @@ impl State {
                 conservative: false,
             },
             depth_stencil: None, // 1.
-            multisample: wgpu::MultisampleState {
-                count: SAMPLE_COUNT,              // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
-            },
+            multisample: wgpu::MultisampleState::default(), // multisample: wgpu::MultisampleState {
+                                 //     count: SAMPLE_COUNT,              // 2.
+                                 //     mask: !0,                         // 3.
+                                 //     alpha_to_coverage_enabled: false, // 4.
+                                 // },
         });
         let render_param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Render Parameter Buffer"),
             contents: bytemuck::cast_slice(&[render_param_data]),
-            usage: wgpu::BufferUsages::UNIFORM
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::MAP_WRITE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // | wgpu::BufferUsages::MAP_WRITE,
         });
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &render_pipeline.get_bind_group_layout(0),
@@ -328,7 +332,7 @@ impl State {
                 multiview: None,
                 color_formats: &[Some(config.format)],
                 depth_stencil: None,
-                sample_count: SAMPLE_COUNT,
+                sample_count: 1,
             });
         encoder.set_pipeline(&render_pipeline);
         encoder.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -351,13 +355,11 @@ impl State {
         let shader_param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Shader Parameter Buffer"),
             contents: bytemuck::cast_slice(&[shader_param_data]),
-            usage: wgpu::BufferUsages::UNIFORM
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::MAP_WRITE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // | wgpu::BufferUsages::MAP_WRITE,
         });
         let species_param_data = SpeciesSettings {
             moveSpeed: 50.0,
-            turnSpeed: -25.0,
+            turnSpeed: -2.0,
             sensorAngleDegrees: 112.0,
             sensorOffsetDst: 50.0,
             sensorSize: 0.0,
@@ -372,9 +374,7 @@ impl State {
         let species_param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Species Parameter Buffer"),
             contents: species_param_slice,
-            usage: wgpu::BufferUsages::UNIFORM
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::MAP_WRITE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // | wgpu::BufferUsages::MAP_WRITE,
         });
         let compute_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -547,6 +547,141 @@ impl State {
             ],
             label: None,
         });
+        // Create fixed-size simulation texture with matching format
+        let sim_texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: SIM_WIDTH,
+                height: SIM_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format, // Use same format as surface config
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            label: Some("simulation_texture"),
+        });
+
+        let sim_texture_view = sim_texture.create_view(&Default::default());
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Scaling Uniforms"),
+            size: std::mem::size_of::<[[f32; 4]; 4]>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Create bind group layout and bind group
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("texture_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let scaled_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("texture_bind_group"),
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&sim_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        // Create pipeline layout
+        let scaling_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("scaling_pipeline_layout"),
+                bind_group_layouts: &[&texture_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        // Create scaling shader
+        let scaling_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scaling_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scaling.wgsl").into()),
+        });
+
+        // Create scaling pipeline
+        let scaling_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("scaling_pipeline"),
+            layout: Some(&scaling_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scaling_shader,
+                entry_point: "vs_main",
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+                }], // 2.  // Add the vertex buffer layout here
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &scaling_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
 
         Self {
             surface,
@@ -572,6 +707,11 @@ impl State {
             msaa_framebuffer,
             shader_param_data,
             species_param_data,
+            sim_texture_view,
+            scaling_pipeline,
+            scaled_texture_bind_group,
+            sampler,
+            uniform_buffer,
         }
     }
     fn create_multisampled_framebuffer(
@@ -648,6 +788,12 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+
+            let projection =
+                get_projection_matrix(new_size.width as f32, new_size.height as f32, true);
+
+            self.queue
+                .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&projection));
         }
     }
 
@@ -664,7 +810,7 @@ impl State {
                 ..
             } => {
                 self.species_param_data.moveSpeed += 1.0;
-                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
             WindowEvent::KeyboardInput {
@@ -679,7 +825,7 @@ impl State {
             } => {
                 self.species_param_data.moveSpeed =
                     (self.species_param_data.moveSpeed - 1.0).max(0.0);
-                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
 
@@ -695,7 +841,7 @@ impl State {
             } => {
                 self.species_param_data.turnSpeed =
                     (self.species_param_data.turnSpeed + 1.0).min(0.0);
-                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
             WindowEvent::KeyboardInput {
@@ -709,7 +855,7 @@ impl State {
                 ..
             } => {
                 self.species_param_data.turnSpeed -= 1.0;
-                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
             WindowEvent::KeyboardInput {
@@ -724,7 +870,7 @@ impl State {
             } => {
                 self.species_param_data.sensorOffsetDst =
                     (self.species_param_data.sensorOffsetDst - 1.0).max(0.0);
-                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
             WindowEvent::KeyboardInput {
@@ -738,21 +884,44 @@ impl State {
                 ..
             } => {
                 self.species_param_data.sensorOffsetDst += 1.0;
-                self.update_buffer(&self.species_param_buffer, &self.species_param_data);
+                self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
             _ => false,
         }
     }
 
-    fn update_buffer<T: bytemuck::Pod + Send + Sync>(&self, buffer: &wgpu::Buffer, data: &T) {
-        let buffer_slice = buffer.slice(..);
-        buffer_slice.map_async(wgpu::MapMode::Write, Result::unwrap);
-        self.device.poll(wgpu::Maintain::Wait);
+    fn update_uniform_buffer<T: bytemuck::Pod + Send + Sync>(
+        &self,
+        buffer: &wgpu::Buffer,
+        data: &T,
+    ) {
         let bytes = bytemuck::bytes_of(data);
+        // self.queue.write_buffer(buffer, 0, bytemuck::bytes_of(data));
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Command Encoder"),
+            });
+        let device_buffer = self.device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: bytes.len() as u64,
+            usage: BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        let buffer_slice = device_buffer.slice(..);
+        self.device.poll(wgpu::Maintain::Wait);
         buffer_slice.get_mapped_range_mut()[..bytes.len()].copy_from_slice(bytes);
-        buffer.unmap();
-        // pollster::block_on(buffer_future).unwrap();
+        device_buffer.unmap();
+        encoder.copy_buffer_to_buffer(
+            &device_buffer,
+            0,
+            &buffer,
+            0,
+            std::mem::size_of_val(&bytes) as BufferAddress,
+        ); //A mutable borrow to the command encoder is needed here in order to update uniforms
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     fn update(&mut self) {
@@ -768,7 +937,7 @@ impl State {
                 .as_secs_f32(),
             time: self.time,
         };
-        self.update_buffer(&self.shader_param_buffer, &shader_param_data);
+        self.update_uniform_buffer(&self.shader_param_buffer, &shader_param_data);
         self.then = Instant::now();
     }
 
@@ -787,11 +956,11 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.msaa_framebuffer,
-                    resolve_target: Some(&view),
+                    view: &self.sim_texture_view,
+                    resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
-                        store: false,
+                        store: true,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -803,7 +972,7 @@ impl State {
                         multiview: None,
                         color_formats: &[Some(self.config.format)],
                         depth_stencil: None,
-                        sample_count: SAMPLE_COUNT,
+                        sample_count: 1,
                     });
             encoder.set_pipeline(&self.render_pipeline);
             encoder.set_bind_group(0, &self.render_bind_group, &[]);
@@ -814,6 +983,27 @@ impl State {
             });
             render_pass.execute_bundles(std::iter::once(&self.bundle));
         }
+
+        {
+            let mut scaling_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scaling_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+
+            scaling_pass.set_pipeline(&self.scaling_pipeline);
+            scaling_pass.set_bind_group(0, &self.scaled_texture_bind_group, &[]);
+            scaling_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            scaling_pass.draw(0..VERTICES.len() as _, 0..1);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
@@ -865,19 +1055,59 @@ impl State {
         Ok(())
     }
 }
+fn get_projection_matrix(
+    window_width: f32,
+    window_height: f32,
+    center_crop: bool,
+) -> [[f32; 4]; 4] {
+    let window_aspect = window_width / window_height;
+    let sim_aspect = (SIM_WIDTH as f32) / (SIM_HEIGHT as f32);
 
+    let (width, height) = if window_aspect > sim_aspect {
+        if center_crop {
+            // Window is wider - scale up sim width to match window width
+            let width = 1.0;
+            let height = sim_aspect / window_aspect;
+            (width, height)
+        } else {
+            // Window is wider - letterbox width
+            let height = 1.0;
+            let width = window_aspect / sim_aspect;
+            (width, height)
+        }
+    } else {
+        if center_crop {
+            // Window is taller - scale up sim height to match window height
+            let width = window_aspect / sim_aspect;
+            let height = 1.0;
+            (width, height)
+        } else {
+            // Window is taller - letterbox height
+            let width = 1.0;
+            let height = sim_aspect / window_aspect;
+            (width, height)
+        }
+    };
+
+    cgmath::ortho(-width, width, -height, height, -1.0, 1.0).into()
+}
 fn main() {
     env_logger::init();
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_inner_size(PhysicalSize {
-            height: SIM_HEIGHT,
-            width: SIM_WIDTH,
-        })
+        // .with_inner_size(PhysicalSize {
+        //     height: SIM_HEIGHT,
+        //     width: SIM_WIDTH,
+        // })
+        // .with_max_inner_size(PhysicalSize {
+        //     height: SIM_HEIGHT,
+        //     width: SIM_WIDTH,
+        // })
         .build(&event_loop)
         .unwrap();
-    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+    // window.set_fullscreen(Some(Fullscreen::Borderless(None)));
     let mut state = pollster::block_on(State::new(&window));
+    state.resize(window.inner_size());
 
     event_loop.run(move |event, _, control_flow| {
         match event {
