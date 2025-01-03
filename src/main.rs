@@ -80,7 +80,6 @@ struct State {
     pong_texture: wgpu::Texture,
     then: Instant,
     bundle: wgpu::RenderBundle,
-    msaa_framebuffer: wgpu::TextureView,
     shader_param_data: ShaderParams,
     species_param_data: SpeciesSettings,
 
@@ -164,8 +163,6 @@ impl State {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
         };
         surface.configure(&device, &config);
-        let msaa_framebuffer =
-            Self::create_multisampled_framebuffer(&device, &config, SAMPLE_COUNT);
 
         let clear_color = wgpu::Color::BLACK;
 
@@ -704,7 +701,6 @@ impl State {
             pong_texture,
             then: Instant::now(),
             bundle,
-            msaa_framebuffer,
             shader_param_data,
             species_param_data,
             sim_texture_view,
@@ -714,30 +710,7 @@ impl State {
             uniform_buffer,
         }
     }
-    fn create_multisampled_framebuffer(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        sample_count: u32,
-    ) -> wgpu::TextureView {
-        let multisampled_texture_extent = wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        };
-        let multisampled_frame_descriptor = &wgpu::TextureDescriptor {
-            size: multisampled_texture_extent,
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: config.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: None,
-        };
 
-        device
-            .create_texture(multisampled_frame_descriptor)
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    }
     fn build_agent_buffer(device: &Device) -> wgpu::Buffer {
         let mut agents = vec![
             Agent {
