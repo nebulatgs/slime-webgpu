@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use clap::{arg, command, Parser};
+use clap::{Parser, arg, command};
 use rand::Rng;
-use wgpu::{util::DeviceExt, BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device};
+use wgpu::{BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device, util::DeviceExt};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
