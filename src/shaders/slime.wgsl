@@ -11,10 +11,10 @@ fn triple32(x: u32) -> u32 {
 }
 
 struct Agent {
-	// position: vec2<f32>;
+    // position: vec2<f32>;
 	posX: f32,
-	posY: f32,
-	angle: f32
+    posY: f32,
+    angle: f32
 	//intensity: f32;
 };
 struct Agents {
@@ -22,16 +22,26 @@ struct Agents {
 };
 
 struct SpeciesSettings {
-	moveSpeed: f32,
-	turnSpeed: f32,
-	sensorAngleDegrees: f32,
-	sensorOffsetDst: f32,
-	sensorSize: f32,
-	colourR: f32,
-	colourG: f32,
-	colourB: f32,
-	colourA: f32
+    moveSpeed: f32,
+    turnSpeed: f32,
+    sensorAngleDegrees: f32,
+    sensorOffsetDst: f32,
+    sensorSize: f32,
+    colourR: f32,
+    colourG: f32,
+    colourB: f32,
+    colourA: f32
 };
+
+struct ShaderParams {
+    numAgents: f32,
+    width: f32,
+    height: f32,
+    delta: f32,
+    time: f32
+};
+@group(0) @binding(0)
+var<uniform> shaderParams : ShaderParams;
 
 @group(0) @binding(1)
 var<uniform> speciesSettings: SpeciesSettings;
@@ -39,19 +49,10 @@ var<uniform> speciesSettings: SpeciesSettings;
 @group(0) @binding(2)
 var<storage, read_write> agents: Agents;
 struct FloatArray {
-  elements: array<f32>,
+    elements: array<f32>,
 };
 // @group(0) @binding(3) var<storage, read_write> Texture : FloatArray;
 @group(0) @binding(3) var SourceTexture : texture_storage_2d<rgba32float, read_write>;
-struct ShaderParams {
-    numAgents: f32,
-    width: f32,
-    height: f32,
-    trailWeight: f32,
-    deltaTime: f32,
-    time: f32
-};
-@group(0) @binding(0) var<uniform> shaderParams : ShaderParams;
 
 
 
@@ -65,16 +66,17 @@ fn sense(agent: Agent, settings: SpeciesSettings, sensorAngleOffset: f32) -> f32
 
     var sum = 0.0;
 
-    for (var offsetX = -settings.sensorSize; offsetX <= settings.sensorSize; offsetX = offsetX + 1.0) {
-        for (var offsetY = -settings.sensorSize; offsetY <= settings.sensorSize; offsetY = offsetY + 1.0) {
+    for (var offsetX = -i32(settings.sensorSize); offsetX <= i32(settings.sensorSize); offsetX++) {
+        for (var offsetY = -i32(settings.sensorSize); offsetY <= i32(settings.sensorSize); offsetY++) {
 			// let sampleX = min(i32(shaderParams.width) - 1, max(0, sensorCentreX + i32(offsetX)));
 			// let sampleY = min(i32(shaderParams.height) - 1, max(0, sensorCentreY + i32(offsetY)));
             let sampleX = sensorCentreX + i32(offsetX);
             let sampleY = sensorCentreY + i32(offsetY);
 			//let offset : i32 = sampleY * i32(shaderParams.width) * 4 + sampleX * 4;
-            sum = sum + dot(vec4<f32>(1.0), vec4<f32>(
-                textureLoad(SourceTexture, vec2<i32>(sampleX, sampleY)).r,
-            ));
+            // sum = sum + dot(vec4<f32>(1.0), vec4<f32>(
+            //     textureLoad(SourceTexture, vec2<i32>(sampleX, sampleY)).r,
+            // ));
+            sum = sum + textureLoad(SourceTexture, vec2<i32>(sampleX, sampleY)).r;
         }
     }
 
@@ -89,12 +91,11 @@ const PI_OVER_180 : f32 = 0.01745329251;
 const TWO_PI : f32 = 6.28318530718;
 
 
-@compute @workgroup_size(32,1,1)
+@compute @workgroup_size(128,1,1)
 fn update(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (id.x >= u32(shaderParams.numAgents)) {
+    if id.x >= u32(shaderParams.numAgents) {
         return;
     }
-
 
     var agent = agents.data[id.x];
     let pos = vec2<f32>(agent.posX, agent.posY);
@@ -123,22 +124,22 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
     let shouldTurnRandomly = clamp((sign(weightLeft - weightForward) + sign(weightRight - weightForward)) / 2.0, 0.0, 1.0);
     let shouldTurnNormally = abs((sign(weightForward - weightLeft) - sign(weightForward - weightRight)) / 2.0);
 	//if (weightForward < weightLeft && weightForward < weightRight) {
-    agents.data[id.x].angle = agents.data[id.x].angle + (((randomSteerStrength - 0.5) * 2.0 * turnSpeed * shaderParams.deltaTime) * shouldTurnRandomly);
+    agents.data[id.x].angle = agents.data[id.x].angle + (((randomSteerStrength - 0.5) * 2.0 * turnSpeed * shaderParams.delta) * shouldTurnRandomly);
 	//}
 
 	// Turn right
 	//elseif (weightRight > weightLeft) {
-    agents.data[id.x].angle = agents.data[id.x].angle + (shouldTurnNormally * sign(weightLeft - weightRight) * (randomSteerStrength * turnSpeed * shaderParams.deltaTime));
+    agents.data[id.x].angle = agents.data[id.x].angle + (shouldTurnNormally * sign(weightLeft - weightRight) * (randomSteerStrength * turnSpeed * shaderParams.delta));
 	//}
 	// Turn left
 	//elseif (weightLeft > weightRight) {
-	//	agents.data[id.x].angle = agents.data[id.x].angle + (randomSteerStrength * turnSpeed * shaderParams.deltaTime);
+	//	agents.data[id.x].angle = agents.data[id.x].angle + (randomSteerStrength * turnSpeed * shaderParams.delta);
 	//}
 
 
 	// Update position
     var direction = vec2<f32>(cos(agent.angle), sin(agent.angle));
-    var newPos: vec2<f32> = pos + direction * shaderParams.deltaTime * speciesSettings.moveSpeed;
+    var newPos: vec2<f32> = pos + direction * shaderParams.delta * speciesSettings.moveSpeed;
 
 	
 	// Clamp position to map boundaries, and pick new random move dir if hit boundary
@@ -153,7 +154,7 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
 	// else {
 	//     // var offset : i32 = i32(newPos.y) * i32(shaderParams.width) * 4 + i32(newPos.x) * 4;
 	// 	// var oldTrail : vec4<f32> = vec4<f32>(TrailMap.elements[offset], TrailMap.elements[offset + 1], TrailMap.elements[offset + 2], TrailMap.elements[offset + 3]);
-    //     // var newVal : vec4<f32> = min(vec4<f32>(1., 1., 1., 1.), oldTrail + vec4<f32>(1.0) * vec4<f32>(shaderParams.trailWeight * shaderParams.deltaTime, shaderParams.trailWeight * shaderParams.deltaTime, shaderParams.trailWeight * shaderParams.deltaTime, shaderParams.trailWeight * shaderParams.deltaTime));
+    //     // var newVal : vec4<f32> = min(vec4<f32>(1., 1., 1., 1.), oldTrail + vec4<f32>(1.0) * vec4<f32>(shaderParams.delta * shaderParams.delta, shaderParams.delta * shaderParams.delta, shaderParams.delta * shaderParams.delta, shaderParams.delta * shaderParams.delta));
 	// 	// TrailMap.elements[offset] = newVal.x;
 	// 	// TrailMap.elements[offset + 1] = newVal.y;
 	// 	// TrailMap.elements[offset + 2] = newVal.z;
@@ -163,5 +164,9 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
     agents.data[id.x].posY = newPos.y;
     let intNewPos = vec2<i32>(i32(newPos.x), i32(newPos.y));
     let pix = textureLoad(SourceTexture, intNewPos);
-    textureStore(SourceTexture, intNewPos, vec4<f32>(pix.r, 0.0, 0.009 + pix.r, 1.0));
+    
+    // Make trail deposition frame-rate independent using delta time
+    let baseTrailIntensity = 0.009;
+    let trailIntensity = baseTrailIntensity * shaderParams.delta * 10.0;
+    textureStore(SourceTexture, intNewPos, vec4<f32>(pix.r, 0.0, trailIntensity + pix.r, 1.0));
 }

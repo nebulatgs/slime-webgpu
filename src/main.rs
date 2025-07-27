@@ -10,9 +10,9 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window, WindowId},
 };
-static NUM_AGENTS: u32 = (1 << 23) - 32;
 static AGENTS_PER_GROUP: u32 = 128;
-static DIFFUSE_TILE_SIZE: u32 = 8;
+static NUM_AGENTS: u32 = (1 << 23) - AGENTS_PER_GROUP;
+static DIFFUSE_TILE_SIZE: u32 = 16;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
 static SIM_WIDTH: u32 = (3840.0 * SCALE_DOWN_FACTOR) as _;
 static SIM_HEIGHT: u32 = (2160.0 * SCALE_DOWN_FACTOR) as _;
@@ -48,8 +48,7 @@ struct ShaderParams {
     numAgents: f32,
     width: f32,
     height: f32,
-    trailWeight: f32,
-    deltaTime: f32,
+    delta: f32,
     time: f32,
 }
 
@@ -144,10 +143,11 @@ impl<'a> State<'a> {
         //         .unwrap(),
         // )));
         window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        // window.set_fullscreen(None);
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });
         let window = Arc::new(Box::new(window));
@@ -372,8 +372,7 @@ impl<'a> State<'a> {
             numAgents: NUM_AGENTS as _,
             width: SIM_WIDTH as _,
             height: SIM_HEIGHT as _,
-            trailWeight: 0.5,
-            deltaTime: 0.03,
+            delta: 0.03,
             time: 0.0,
         };
         let shader_param_slice = &[shader_param_data];
@@ -381,12 +380,12 @@ impl<'a> State<'a> {
 
         let shader_param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Shader Parameter Buffer"),
-            contents: bytemuck::cast_slice(&[shader_param_data]),
+            contents: shader_param_slice,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, // | wgpu::BufferUsages::MAP_WRITE,
         });
         let species_param_data = SpeciesSettings {
-            moveSpeed: 50.0,
-            turnSpeed: -2.0,
+            moveSpeed: 120.0,
+            turnSpeed: -4.0,
             sensorAngleDegrees: 112.0,
             sensorOffsetDst: 50.0,
             sensorSize: 0.0,
@@ -831,6 +830,19 @@ impl<'a> State<'a> {
                 event:
                     KeyEvent {
                         state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyL),
+                        ..
+                    },
+                ..
+            } => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
                         physical_key: PhysicalKey::Code(KeyCode::KeyA),
                         ..
                     },
@@ -904,12 +916,13 @@ impl<'a> State<'a> {
         }
     }
 
-    fn update_uniform_buffer<T: bytemuck::Pod + Send + Sync>(
+    fn update_uniform_buffer<T: bytemuck::Pod + Send + Sync + std::fmt::Debug>(
         &self,
         buffer: &wgpu::Buffer,
         data: &T,
     ) {
         let bytes = bytemuck::bytes_of(data);
+        // dbg!(&data);
         // self.queue.write_buffer(buffer, 0, bytemuck::bytes_of(data));
 
         let mut encoder = self
@@ -938,20 +951,22 @@ impl<'a> State<'a> {
     }
 
     fn update(&mut self) {
-        self.time = self.time + 0.1;
+        let now = Instant::now();
+        let delta = now.duration_since(self.then).as_secs_f32();
+        self.then = now;
+
+        // Time is used for shader RNG
+        self.time = self.time + delta;
+
         let shader_param_data = ShaderParams {
             numAgents: NUM_AGENTS as _,
             width: SIM_WIDTH as _,
             height: SIM_HEIGHT as _,
-            trailWeight: 0.5,
-            deltaTime: Instant::now()
-                .checked_duration_since(self.then)
-                .unwrap()
-                .as_secs_f32(),
+            delta,
             time: self.time,
         };
+        println!("delta: {}", shader_param_data.delta);
         self.update_uniform_buffer(&self.shader_param_buffer, &shader_param_data);
-        self.then = Instant::now();
     }
 
     fn draw(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -1139,6 +1154,7 @@ impl<'a> ApplicationHandler for SlimeSim<'a> {
         state.input(&event);
         match event {
             WindowEvent::RedrawRequested => {
+                // state.then = Instant::now();
                 match state.draw() {
                     Ok(_) => {}
                     // Reconfigure the surface if lost

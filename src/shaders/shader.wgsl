@@ -17,7 +17,8 @@ fn vs_main(
     out.clip_position = vec4<f32>(vertex.position, 1.0);
     return out;
 }
- // Fragment shader
+
+// Fragment shader
 
 struct RenderParams {
     width: f32,
@@ -26,13 +27,21 @@ struct RenderParams {
 };
 @group(0) @binding(2) var<uniform> renderParams: RenderParams;
 
-// let col : vec4<f32> = vec4<f32>(0.00002436677, 0.98248443487, 0.31557875231, 1.);
-const a : f32 = 2.;
+const GAMMA: f32 = 1.01;
+const INV_GAMMA: f32 = 1.0 / GAMMA;
+
+// Gamma correction
+fn gamma_correct(color: f32) -> f32 {
+    return pow(max(color, 0.0), INV_GAMMA);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var thing = textureLoad(SourceTexture, vec2<i32>((in.clip_position * renderParams.scaleDownFactor).xy));
-
-    return vec4<f32>(vec3<f32>((pow(a, thing.r) - 1.0) / (a - 1.0)), 1.0);
+    
+    let corrected = gamma_correct(thing.r);
+    
+    return vec4<f32>(vec3<f32>(corrected * 10.0), 1.0);
     // return in.clip_position / vec4<f32>(1000.0);
 }
  
