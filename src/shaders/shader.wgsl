@@ -27,7 +27,7 @@ struct RenderParams {
 @group(0) @binding(2) var<uniform> renderParams: RenderParams;
 
 // let col : vec4<f32> = vec4<f32>(0.00002436677, 0.98248443487, 0.31557875231, 1.);
-let a : f32 = 2.;
+const a : f32 = 2.;
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var thing = textureLoad(SourceTexture, vec2<i32>((in.clip_position * renderParams.scaleDownFactor).xy));

@@ -85,8 +85,8 @@ fn scaleToRange01(state: u32) -> f32 {
     return f32(state) / 4294967295.0;
 }
 
-let PI_OVER_180 : f32 = 0.01745329251;
-let TWO_PI : f32 = 6.28318530718;
+const PI_OVER_180 : f32 = 0.01745329251;
+const TWO_PI : f32 = 6.28318530718;
 
 
 @compute @workgroup_size(32,1,1)

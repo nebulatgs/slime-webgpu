@@ -1,12 +1,14 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use clap::{arg, command, Parser};
 use rand::Rng;
 use wgpu::{util::DeviceExt, BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device};
 use winit::{
+    application::ApplicationHandler,
     event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::{Fullscreen, Window, WindowBuilder},
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Fullscreen, Window, WindowId},
 };
 static NUM_AGENTS: u32 = (1 << 23) - 32;
 static AGENTS_PER_GROUP: u32 = 128;
@@ -69,8 +71,9 @@ struct Agent {
     angle: f32,
     // intensity: f32,
 }
-struct State {
-    surface: wgpu::Surface,
+struct State<'a> {
+    surface: wgpu::Surface<'a>,
+    window: Arc<Box<winit::window::Window>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -128,9 +131,9 @@ const VERTICES: &[Vertex] = &[
     },
 ];
 
-impl State {
+impl<'a> State<'a> {
     // Creating some of the wgpu types requires async code
-    async fn new(window: &Window, args: Args) -> Self {
+    async fn new(window: Window, args: Args) -> Self {
         let size = window.inner_size();
         // window.set_fullscreen(Some(Fullscreen::Exclusive(
         //     window
@@ -143,8 +146,12 @@ impl State {
         window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
-        let surface = unsafe { instance.create_surface(window) };
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let window = Arc::new(Box::new(window));
+        let surface = instance.create_surface(window.clone()).unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -154,14 +161,13 @@ impl State {
             .await
             .unwrap();
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-                    limits: wgpu::Limits::default(),
-                    label: None,
-                },
-                None, // Trace path
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+                label: None,
+            })
             .await
             .unwrap();
 
@@ -172,8 +178,10 @@ impl State {
         };
 
         let config = wgpu::SurfaceConfiguration {
+            desired_maximum_frame_latency: 2,
+            view_formats: vec![surface.get_capabilities(&adapter).formats[0]],
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_supported_formats(&adapter)[0],
+            format: surface.get_capabilities(&adapter).formats[0],
             width: size.width,
             height: size.height,
             present_mode: vsync_mode,
@@ -202,6 +210,7 @@ impl State {
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[wgpu::TextureFormat::Rgba32Float],
         });
         let pong_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Pong Texture"),
@@ -217,6 +226,7 @@ impl State {
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[wgpu::TextureFormat::Rgba32Float],
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -272,12 +282,14 @@ impl State {
                 push_constant_ranges: &[],
             });
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            cache: None,
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             multiview: None,
             vertex: wgpu::VertexState {
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 module: &shader,
-                entry_point: "vs_main", // 1.
+                entry_point: Some("vs_main"), // 1.
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -285,9 +297,10 @@ impl State {
                 }], // 2.
             },
             fragment: Some(wgpu::FragmentState {
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 // 3.
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     // 4.
                     format: config.format,
@@ -501,17 +514,21 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/diffuse.wgsl").into()),
         });
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             label: Some("Compute Pipeline"),
             layout: Some(&compute_pipeline_layout),
             module: &compute_shader,
-            entry_point: "update",
+            entry_point: Some("update"),
         });
         let compute_diffuse_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                cache: None,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 label: Some("Compute Diffuse Pipeline"),
                 layout: Some(&compute_diffuse_pipeline_layout),
                 module: &compute_diffuse_shader,
-                entry_point: "diffuse",
+                entry_point: Some("diffuse"),
             });
         let agent_buffer = Self::build_agent_buffer(&device);
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -563,6 +580,7 @@ impl State {
         });
         // Create fixed-size simulation texture with matching format
         let sim_texture = device.create_texture(&wgpu::TextureDescriptor {
+            view_formats: &[config.format],
             size: wgpu::Extent3d {
                 width: SIM_WIDTH,
                 height: SIM_HEIGHT,
@@ -663,11 +681,13 @@ impl State {
 
         // Create scaling pipeline
         let scaling_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            cache: None,
             label: Some("scaling_pipeline"),
             layout: Some(&scaling_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &scaling_shader,
-                entry_point: "vs_main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -676,7 +696,8 @@ impl State {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &scaling_shader,
-                entry_point: "fs_main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
@@ -699,6 +720,7 @@ impl State {
 
         Self {
             args,
+            window,
             surface,
             device,
             queue,
@@ -740,7 +762,7 @@ impl State {
             NUM_AGENTS as _
         ];
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let now = std::time::Instant::now();
         for agent in &mut agents {
             static R: f64 = 300.0;
@@ -748,16 +770,16 @@ impl State {
             static CENTER_Y: f64 = SIM_HEIGHT as f64 / 2.0;
             static RAD_TO_DEG: f64 = 180.0 * std::f64::consts::FRAC_1_PI;
 
-            let r = R * rng.gen_range::<f64, _>(0.0..1.0).sqrt();
-            let theta = rng.gen_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
+            let r = R * rng.random_range::<f64, _>(0.0..1.0).sqrt();
+            let theta = rng.random_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
             agent.posX = (CENTER_X + r * theta.cos()) as f32;
             agent.posY = (CENTER_Y + r * theta.sin()) as f32;
-            let angle = rng.gen_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
+            let angle = rng.random_range::<f64, _>(0.0..1.0) * 2.0 * std::f64::consts::PI;
             // agent.posX = 100.0;
             // agent.posY = 100.0;
             agent.angle = ((angle + std::f64::consts::PI) * RAD_TO_DEG) as f32;
-            // agent.posX = rng.gen_range(0.0..SIM_WIDTH as f32/ 2.0);
-            // agent.posY = rng.gen_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
+            // agent.posX = rng.random_range(0.0..SIM_WIDTH as f32/ 2.0);
+            // agent.posY = rng.random_range(-(SIM_HEIGHT  as f32/ 2.0)..SIM_HEIGHT as f32);
         }
 
         println!("generated agents in {}ms", now.elapsed().as_millis());
@@ -792,10 +814,10 @@ impl State {
         match event {
             WindowEvent::KeyboardInput {
                 device_id: _,
-                input:
-                    KeyboardInput {
+                event:
+                    KeyEvent {
                         state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::D),
+                        physical_key: PhysicalKey::Code(KeyCode::KeyD),
                         ..
                     },
                 ..
@@ -806,10 +828,10 @@ impl State {
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
-                input:
-                    KeyboardInput {
+                event:
+                    KeyEvent {
                         state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::A),
+                        physical_key: PhysicalKey::Code(KeyCode::KeyA),
                         ..
                     },
                 ..
@@ -822,10 +844,10 @@ impl State {
 
             WindowEvent::KeyboardInput {
                 device_id: _,
-                input:
-                    KeyboardInput {
+                event:
+                    KeyEvent {
                         state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Q),
+                        physical_key: PhysicalKey::Code(KeyCode::KeyQ),
                         ..
                     },
                 ..
@@ -837,10 +859,10 @@ impl State {
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
-                input:
-                    KeyboardInput {
+                event:
+                    KeyEvent {
                         state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::E),
+                        physical_key: PhysicalKey::Code(KeyCode::KeyE),
                         ..
                     },
                 ..
@@ -851,10 +873,10 @@ impl State {
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
-                input:
-                    KeyboardInput {
+                event:
+                    KeyEvent {
                         state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::S),
+                        physical_key: PhysicalKey::Code(KeyCode::KeyS),
                         ..
                     },
                 ..
@@ -866,10 +888,10 @@ impl State {
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
-                input:
-                    KeyboardInput {
+                event:
+                    KeyEvent {
                         state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::W),
+                        physical_key: PhysicalKey::Code(KeyCode::KeyW),
                         ..
                     },
                 ..
@@ -902,7 +924,7 @@ impl State {
             mapped_at_creation: true,
         });
         let buffer_slice = device_buffer.slice(..);
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::wgt::PollType::Wait);
         buffer_slice.get_mapped_range_mut()[..bytes.len()].copy_from_slice(bytes);
         device_buffer.unmap();
         encoder.copy_buffer_to_buffer(
@@ -951,10 +973,12 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
+                ..Default::default()
             });
             let mut encoder =
                 self.device
@@ -983,10 +1007,12 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
+                ..Default::default()
             });
 
             scaling_pass.set_pipeline(&self.scaling_pipeline);
@@ -1011,6 +1037,7 @@ impl State {
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
+                ..Default::default()
             });
             compute_pass.set_pipeline(&self.compute_pipeline);
             compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
@@ -1020,6 +1047,7 @@ impl State {
             let mut compute_diffuse_pass =
                 encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("Compute Diffuse Pass"),
+                    ..Default::default()
                 });
             compute_diffuse_pass.set_pipeline(&self.compute_diffuse_pipeline);
             compute_diffuse_pass.set_bind_group(0, &self.compute_diffuse_bind_group, &[]);
@@ -1083,81 +1111,84 @@ fn get_projection_matrix(
     cgmath::ortho(-width, width, -height, height, -1.0, 1.0).into()
 }
 
-fn main() {
-    let args = Args::parse();
-    env_logger::init();
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        // .with_inner_size(PhysicalSize {
-        //     height: SIM_HEIGHT,
-        //     width: SIM_WIDTH,
-        // })
-        // .with_max_inner_size(PhysicalSize {
-        //     height: SIM_HEIGHT,
-        //     width: SIM_WIDTH,
-        // })
-        .build(&event_loop)
-        .unwrap();
-    // window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-    let mut state = pollster::block_on(State::new(&window, args));
-    state.resize(state.size);
+#[derive(Default)]
+struct SlimeSim<'a> {
+    // window: Option<Window>,
+    args: Option<Args>,
+    state: Option<State<'a>>,
+}
 
-    event_loop.run(move |event, _, control_flow| {
+impl<'a> ApplicationHandler for SlimeSim<'a> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window_attributes = Window::default_attributes().with_title("Slime");
+        let window = event_loop.create_window(window_attributes).unwrap();
+        let mut state =
+            pollster::block_on(State::<'static>::new(window, self.args.take().unwrap()));
+        state.resize(state.size);
+        // state.window.request_redraw();
+        self.state = Some(state);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let state = self.state.as_mut().unwrap();
+        state.input(&event);
         match event {
-            Event::RedrawRequested(_) => {
+            WindowEvent::RedrawRequested => {
                 match state.draw() {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     // All other errors (Outdated, Timeout) should be resolved by the next frame
                     Err(e) => eprintln!("{:?}", e),
                 }
-            }
-            Event::MainEventsCleared => {
-                // RedrawRequested will only trigger once, unless we manually
-                // request it.
                 state.update();
                 match state.render() {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     // All other errors (Outdated, Timeout) should be resolved by the next frame
                     Err(e) => eprintln!("{:?}", e),
                 }
-                window.request_redraw();
+                state.window.request_redraw();
             }
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == window.id() => {
-                if !state.input(event) {
-                    // UPDATED!
-                    match event {
-                        WindowEvent::CloseRequested
-                        | WindowEvent::KeyboardInput {
-                            input:
-                                KeyboardInput {
-                                    state: ElementState::Pressed,
-                                    virtual_keycode: Some(VirtualKeyCode::Escape),
-                                    ..
-                                },
-                            ..
-                        } => *control_flow = ControlFlow::Exit,
-                        WindowEvent::Resized(physical_size) => {
-                            state.resize(*physical_size);
-                        }
-                        WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                            state.resize(**new_inner_size);
-                        }
-                        _ => {}
-                    }
-                }
+
+            WindowEvent::CloseRequested
+            | WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        ..
+                    },
+                ..
+            } => event_loop.exit(),
+            WindowEvent::Resized(physical_size) => {
+                state.resize(physical_size);
             }
+            // WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+            //     state.resize(**new_inner_size);
+            // }
             _ => {}
         }
-    });
+    }
+}
+fn main() {
+    let args = Args::parse();
+    env_logger::init();
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = SlimeSim {
+        args: Some(args),
+        state: None,
+    };
+
+    event_loop.run_app(&mut app).unwrap();
 }
