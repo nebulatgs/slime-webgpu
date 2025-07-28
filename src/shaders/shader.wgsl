@@ -37,7 +37,8 @@ fn gamma_correct(color: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var thing = textureLoad(SourceTexture, vec2<i32>((in.clip_position * renderParams.scaleDownFactor).xy));
+    // var thing = textureLoad(SourceTexture, vec2<i32>((in.clip_position * renderParams.scaleDownFactor).xy));
+    var thing = textureLoad(SourceTexture, vec2<i32>((in.clip_position).xy));
     
     let corrected = gamma_correct(thing.r);
     

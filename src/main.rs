@@ -1,7 +1,6 @@
-use std::{sync::Arc, time::Instant};
-
 use clap::{arg, command, Parser};
 use rand::Rng;
+use std::{sync::Arc, time::Instant};
 use wgpu::{util::DeviceExt, BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device};
 use winit::{
     application::ApplicationHandler,
@@ -10,12 +9,15 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window, WindowId},
 };
+
 static AGENTS_PER_GROUP: u32 = 128;
 static NUM_AGENTS: u32 = (1 << 23) - AGENTS_PER_GROUP;
-static DIFFUSE_TILE_SIZE: u32 = 16;
+static DIFFUSE_TILE_SIZE: u32 = 8;
 static SCALE_DOWN_FACTOR: f32 = 1.0;
-static SIM_WIDTH: u32 = (3840.0 * SCALE_DOWN_FACTOR) as _;
-static SIM_HEIGHT: u32 = (2160.0 * SCALE_DOWN_FACTOR) as _;
+// static SIM_WIDTH: u32 = (3840.0 * SCALE_DOWN_FACTOR) as _;
+// static SIM_HEIGHT: u32 = (2160.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_WIDTH: u32 = (4096.0 * SCALE_DOWN_FACTOR) as _;
+static SIM_HEIGHT: u32 = (4096.0 * SCALE_DOWN_FACTOR) as _;
 
 /// Slime Simulation
 #[derive(Parser)]
@@ -101,6 +103,23 @@ struct State<'a> {
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     args: Args,
+
+    // Pan and zoom state
+    pan_x: f32,
+    pan_y: f32,
+    zoom: f32,
+
+    // Mouse state for trackpad interaction
+    is_dragging: bool,
+    last_mouse_pos: Option<(f32, f32)>,
+
+    // Smooth panning state
+    pan_velocity_x: f32,
+    pan_velocity_y: f32,
+    last_frame_time: std::time::Instant,
+
+    // Modifier key state
+    modifiers: Modifiers,
 }
 
 #[repr(C)]
@@ -178,7 +197,7 @@ impl<'a> State<'a> {
         };
 
         let config = wgpu::SurfaceConfiguration {
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 10,
             view_formats: vec![surface.get_capabilities(&adapter).formats[0]],
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface.get_capabilities(&adapter).formats[0],
@@ -747,6 +766,23 @@ impl<'a> State<'a> {
             scaled_texture_bind_group,
             sampler,
             uniform_buffer,
+
+            // Initialize pan and zoom
+            pan_x: 0.0,
+            pan_y: 0.0,
+            zoom: SCALE_DOWN_FACTOR,
+
+            // Initialize mouse state
+            is_dragging: false,
+            last_mouse_pos: None,
+
+            // Initialize smooth panning
+            pan_velocity_x: 0.0,
+            pan_velocity_y: 0.0,
+            last_frame_time: Instant::now(),
+
+            // Initialize modifier state
+            modifiers: Modifiers::default(),
         }
     }
 
@@ -801,11 +837,17 @@ impl<'a> State<'a> {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            let projection =
-                get_projection_matrix(new_size.width as f32, new_size.height as f32, true);
+            let transform = get_transform_matrix(
+                new_size.width as f32,
+                new_size.height as f32,
+                true,
+                self.pan_x,
+                self.pan_y,
+                self.zoom,
+            );
 
             self.queue
-                .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&projection));
+                .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&transform));
         }
     }
 
@@ -912,6 +954,241 @@ impl<'a> State<'a> {
                 self.update_uniform_buffer(&self.species_param_buffer, &self.species_param_data);
                 true
             }
+
+            // Pan and zoom controls
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowUp),
+                        ..
+                    },
+                ..
+            } => {
+                self.pan_y -= 0.001 / self.zoom; // Adjust pan speed based on zoom level
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowDown),
+                        ..
+                    },
+                ..
+            } => {
+                self.pan_y += 0.001 / self.zoom;
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowLeft),
+                        ..
+                    },
+                ..
+            } => {
+                self.pan_x -= 0.001 / self.zoom;
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowRight),
+                        ..
+                    },
+                ..
+            } => {
+                self.pan_x += 0.001 / self.zoom;
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::Equal),
+                        ..
+                    },
+                ..
+            } => {
+                // Zoom in around viewbox center
+                let new_zoom = (self.zoom * 1.1).min(20.0);
+                let zoom_ratio = new_zoom / self.zoom;
+                self.pan_x *= zoom_ratio;
+                self.pan_y *= zoom_ratio;
+                self.zoom = new_zoom;
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::Minus),
+                        ..
+                    },
+                ..
+            } => {
+                // Zoom out around viewbox center
+                let new_zoom = (self.zoom / 1.1).max(0.1);
+                let zoom_ratio = new_zoom / self.zoom;
+                self.pan_x *= zoom_ratio;
+                self.pan_y *= zoom_ratio;
+                self.zoom = new_zoom;
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyR),
+                        ..
+                    },
+                ..
+            } => {
+                // Reset pan and zoom
+                self.pan_x = 0.0;
+                self.pan_y = 0.0;
+                self.zoom = SCALE_DOWN_FACTOR;
+                self.is_dragging = false;
+                self.last_mouse_pos = None;
+                self.pan_velocity_x = 0.0;
+                self.pan_velocity_y = 0.0;
+                self.modifiers = Modifiers::default();
+                self.update_transform_matrix();
+                true
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Check if CMD modifier is pressed for zoom vs pan
+                let is_cmd_pressed = self.modifiers.state().super_key();
+
+                match delta {
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        if is_cmd_pressed {
+                            // CMD + mouse wheel = zoom around viewbox center
+                            let zoom_factor = 1.0 + (*y * 0.1);
+                            let new_zoom = (self.zoom * zoom_factor).max(0.1).min(20.0);
+
+                            // Adjust pan to keep the center of the viewbox stable during zoom
+                            let zoom_ratio = new_zoom / self.zoom;
+                            self.pan_x *= zoom_ratio;
+                            self.pan_y *= zoom_ratio;
+
+                            self.zoom = new_zoom;
+                        } else {
+                            // Regular mouse wheel = pan
+                            let pan_sensitivity = 0.05; // / self.zoom;
+                            self.pan_x += x * pan_sensitivity;
+                            self.pan_y += y * pan_sensitivity;
+                        }
+                        self.update_transform_matrix();
+                    }
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        if is_cmd_pressed {
+                            // CMD + trackpad scroll = zoom around viewbox center
+                            let zoom_factor = 1.0 + (pos.y as f32 * 0.003);
+                            let new_zoom = (self.zoom * zoom_factor).max(0.1).min(20.0);
+
+                            // Adjust pan to keep the center of the viewbox stable during zoom
+                            let zoom_ratio = new_zoom / self.zoom;
+                            self.pan_x *= zoom_ratio;
+                            self.pan_y *= zoom_ratio;
+
+                            self.zoom = new_zoom;
+                        } else {
+                            // Regular trackpad scroll = pan
+                            let pan_sensitivity = 0.002; // / self.zoom;
+                            self.pan_x += pos.x as f32 * pan_sensitivity;
+                            self.pan_y -= pos.y as f32 * pan_sensitivity;
+                        }
+                        self.update_transform_matrix();
+                    }
+                };
+                true
+            }
+
+            // Track modifier key state
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = *modifiers;
+                false // Don't consume the event
+            }
+
+            // Mouse button events for trackpad dragging
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.is_dragging = true;
+                true
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.is_dragging = false;
+                self.last_mouse_pos = None;
+                true
+            }
+
+            // Mouse movement for trackpad panning (fallback for non-gesture systems)
+            WindowEvent::CursorMoved { position, .. } => {
+                if self.is_dragging {
+                    if let Some((last_x, last_y)) = self.last_mouse_pos {
+                        // Calculate movement delta
+                        let dx = position.x as f32 - last_x;
+                        let dy = position.y as f32 - last_y;
+
+                        // Calculate time delta for smooth velocity tracking
+                        let now = std::time::Instant::now();
+                        let dt = now.duration_since(self.last_frame_time).as_secs_f32();
+
+                        // Convert screen space movement to world space
+                        // Improved sensitivity curve that feels natural at all zoom levels
+                        let base_sensitivity = 3.0 / (self.size.width.min(self.size.height) as f32);
+                        let zoom_factor = 1.0 / self.zoom.sqrt(); // Square root for more natural feel
+                        let pan_sensitivity = base_sensitivity * zoom_factor;
+
+                        let pan_dx = dx * pan_sensitivity;
+                        let pan_dy = -dy * pan_sensitivity; // Invert Y for natural feel
+
+                        self.pan_x += pan_dx;
+                        self.pan_y += pan_dy;
+
+                        // Update velocity for potential momentum (future enhancement)
+                        if dt > 0.0 {
+                            self.pan_velocity_x = pan_dx / dt;
+                            self.pan_velocity_y = pan_dy / dt;
+                        }
+
+                        self.last_frame_time = now;
+                        self.update_transform_matrix();
+                    }
+
+                    self.last_mouse_pos = Some((position.x as f32, position.y as f32));
+                    true
+                } else {
+                    // Update frame time even when not dragging
+                    self.last_frame_time = std::time::Instant::now();
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -950,6 +1227,20 @@ impl<'a> State<'a> {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    fn update_transform_matrix(&mut self) {
+        let transform = get_transform_matrix(
+            self.size.width as f32,
+            self.size.height as f32,
+            true,
+            self.pan_x,
+            self.pan_y,
+            self.zoom,
+        );
+
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&transform));
+    }
+
     fn update(&mut self) {
         let now = Instant::now();
         let delta = now.duration_since(self.then).as_secs_f32();
@@ -965,7 +1256,7 @@ impl<'a> State<'a> {
             delta,
             time: self.time,
         };
-        println!("delta: {}", shader_param_data.delta);
+        // println!("delta: {}", shader_param_data.delta);
         self.update_uniform_buffer(&self.shader_param_buffer, &shader_param_data);
     }
 
@@ -1089,10 +1380,13 @@ impl<'a> State<'a> {
         Ok(())
     }
 }
-fn get_projection_matrix(
+fn get_transform_matrix(
     window_width: f32,
     window_height: f32,
     center_crop: bool,
+    pan_x: f32,
+    pan_y: f32,
+    zoom: f32,
 ) -> [[f32; 4]; 4] {
     let window_aspect = window_width / window_height;
     let sim_aspect = (SIM_WIDTH as f32) / (SIM_HEIGHT as f32);
@@ -1123,7 +1417,15 @@ fn get_projection_matrix(
         }
     };
 
-    cgmath::ortho(-width, width, -height, height, -1.0, 1.0).into()
+    // Create the projection matrix
+    let projection = cgmath::ortho(-width, width, -height, height, -1.0, 1.0);
+
+    // Create view matrix for pan and zoom
+    let view = cgmath::Matrix4::from_translation(cgmath::Vector3::new(pan_x, pan_y, 0.0))
+        * cgmath::Matrix4::from_scale(zoom);
+
+    // Combine projection and view matrices
+    (projection * view).into()
 }
 
 #[derive(Default)]
@@ -1140,7 +1442,8 @@ impl<'a> ApplicationHandler for SlimeSim<'a> {
         let mut state =
             pollster::block_on(State::<'static>::new(window, self.args.take().unwrap()));
         state.resize(state.size);
-        // state.window.request_redraw();
+        state.update_transform_matrix(); // Initialize the transformation matrix
+                                         // state.window.request_redraw();
         self.state = Some(state);
     }
 

@@ -1,5 +1,5 @@
 struct Uniforms {
-    projection: mat4x4<f32>,
+    transform: mat4x4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -18,7 +18,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.position = uniforms.projection * vec4<f32>(in.position.xy, 0.0, 1.0);
+    out.position = uniforms.transform * vec4<f32>(in.position.xy, 0.0, 1.0);
     out.tex_coords = vec2<f32>(
         in.position.x * 0.5 + 0.5,
         -(in.position.y * 0.5) + 0.5
