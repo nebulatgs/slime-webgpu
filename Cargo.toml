@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = { version = "26.0", features = ["vulkan-portability"] }
+wgpu = { version = "27.0.1", features = ["vulkan-portability"] }
 winit = "0.30"
 pollster = "0.4"
 rand = "0.9"
@@ -16,3 +16,5 @@ bytemuck = { version = "1.23", features = ["derive"] }
 cgmath = "0.18"
 image = "0.25"
 clap = { version = "4.5", features = ["derive"] }
+arboard = "3.6"
+half = { version = "2.6.0", features = ["bytemuck"] }

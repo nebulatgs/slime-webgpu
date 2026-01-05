@@ -7,7 +7,7 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var SourceTextureSampler : sampler;
-@group(0) @binding(1) var SourceTexture : texture_storage_2d<rgba32float, read>;
+@group(0) @binding(1) var SourceTexture : texture_storage_2d<rg16float, read>;
 
 @vertex
 fn vs_main(
@@ -24,6 +24,7 @@ struct RenderParams {
     width: f32,
     height: f32,
     scaleDownFactor: f32,
+    exposure: f32,
 };
 @group(0) @binding(2) var<uniform> renderParams: RenderParams;
 
@@ -42,7 +43,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     let corrected = gamma_correct(thing.r);
     
-    return vec4<f32>(vec3<f32>(corrected * 10.0), 1.0);
+    return vec4<f32>(vec3<f32>(corrected * renderParams.exposure), 1.0);
     // return in.clip_position / vec4<f32>(1000.0);
 }
  

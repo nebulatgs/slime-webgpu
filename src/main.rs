@@ -1,7 +1,8 @@
+use arboard::Clipboard;
 use clap::{arg, command, Parser};
 use rand::Rng;
 use std::{sync::Arc, time::Instant};
-use wgpu::{util::DeviceExt, BindGroup, BufferAddress, BufferDescriptor, BufferUsages, Device};
+use wgpu::{util::DeviceExt, BindGroup, Device, ExperimentalFeatures};
 use winit::{
     application::ApplicationHandler,
     event::*,
@@ -13,7 +14,7 @@ use winit::{
 static AGENTS_PER_GROUP: u32 = 128;
 static NUM_AGENTS: u32 = (1 << 23) - AGENTS_PER_GROUP;
 static DIFFUSE_TILE_SIZE: u32 = 8;
-static SCALE_DOWN_FACTOR: f32 = 1.0;
+static SCALE_DOWN_FACTOR: f32 = 2.0;
 // static SIM_WIDTH: u32 = (3840.0 * SCALE_DOWN_FACTOR) as _;
 // static SIM_HEIGHT: u32 = (2160.0 * SCALE_DOWN_FACTOR) as _;
 static SIM_WIDTH: u32 = (4096.0 * SCALE_DOWN_FACTOR) as _;
@@ -26,6 +27,12 @@ struct Args {
     /// Enable VSync
     #[arg(long)]
     vsync: bool,
+
+    #[arg(long)]
+    hdr: bool,
+
+    #[arg(long)]
+    exposure: Option<f32>,
 }
 
 #[repr(C)]
@@ -61,6 +68,7 @@ struct RenderParams {
     width: f32,
     height: f32,
     scaleDownFactor: f32,
+    exposure: f32,
 }
 
 #[repr(C)]
@@ -70,9 +78,11 @@ struct Agent {
     posX: f32,
     posY: f32,
     angle: f32,
+    _padding: f32,
     // intensity: f32,
 }
 struct State<'a> {
+    render_params: RenderParams,
     surface: wgpu::Surface<'a>,
     window: Arc<Box<winit::window::Window>>,
     device: wgpu::Device,
@@ -182,8 +192,9 @@ impl<'a> State<'a> {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-                required_limits: wgpu::Limits::default(),
+                required_limits: adapter.limits(),
                 memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: ExperimentalFeatures::disabled(),
                 trace: wgpu::Trace::Off,
                 label: None,
             })
@@ -197,10 +208,20 @@ impl<'a> State<'a> {
         };
 
         let config = wgpu::SurfaceConfiguration {
-            desired_maximum_frame_latency: 10,
-            view_formats: vec![surface.get_capabilities(&adapter).formats[0]],
+            desired_maximum_frame_latency: 2,
+            view_formats: vec![if args.hdr {
+                wgpu::TextureFormat::Rgba16Float
+            } else {
+                wgpu::TextureFormat::Bgra8Unorm
+            }],
+            // view_formats: vec![surface.get_capabilities(&adapter).formats[0]],
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_capabilities(&adapter).formats[0],
+            // format: surface.get_capabilities(&adapter).formats[0],
+            format: if args.hdr {
+                wgpu::TextureFormat::Rgba16Float
+            } else {
+                wgpu::TextureFormat::Bgra8Unorm
+            },
             width: size.width,
             height: size.height,
             present_mode: vsync_mode,
@@ -225,11 +246,11 @@ impl<'a> State<'a> {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
+            format: wgpu::TextureFormat::Rg16Float,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[wgpu::TextureFormat::Rgba32Float],
+            view_formats: &[wgpu::TextureFormat::Rg16Float],
         });
         let pong_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Pong Texture"),
@@ -241,11 +262,11 @@ impl<'a> State<'a> {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
+            format: wgpu::TextureFormat::Rg16Float,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[wgpu::TextureFormat::Rgba32Float],
+            view_formats: &[wgpu::TextureFormat::Rg16Float],
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -256,6 +277,7 @@ impl<'a> State<'a> {
             width: SIM_WIDTH as _,
             height: SIM_HEIGHT as _,
             scaleDownFactor: SCALE_DOWN_FACTOR as _,
+            exposure: args.exposure.unwrap_or(if args.hdr { 100.0 } else { 10.0 }),
         };
         let render_param_slice = &[render_param_data];
         let render_param_slice: &[u8] = bytemuck::cast_slice(render_param_slice);
@@ -275,7 +297,7 @@ impl<'a> State<'a> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba32Float,
+                            format: wgpu::TextureFormat::Rg16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -463,7 +485,7 @@ impl<'a> State<'a> {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadWrite,
-                            format: wgpu::TextureFormat::Rgba32Float,
+                            format: wgpu::TextureFormat::Rg16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -491,7 +513,7 @@ impl<'a> State<'a> {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba32Float,
+                            format: wgpu::TextureFormat::Rg16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -502,7 +524,7 @@ impl<'a> State<'a> {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba32Float,
+                            format: wgpu::TextureFormat::Rg16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -737,6 +759,7 @@ impl<'a> State<'a> {
         });
 
         Self {
+            render_params: render_param_data,
             args,
             window,
             surface,
@@ -792,6 +815,7 @@ impl<'a> State<'a> {
                 posX: 0.0,
                 posY: 0.0,
                 angle: 0.0,
+                _padding: 0.0,
                 // intensity: 0.0,
             };
             NUM_AGENTS as _
@@ -1072,6 +1096,20 @@ impl<'a> State<'a> {
                 self.update_transform_matrix();
                 true
             }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        physical_key: PhysicalKey::Code(KeyCode::KeyC),
+                        ..
+                    },
+                ..
+            } => {
+                // Copy texture to clipboard
+                self.copy_texture_to_clipboard();
+                true
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Check if CMD modifier is pressed for zoom vs pan
                 let is_cmd_pressed = self.modifiers.state().super_key();
@@ -1198,33 +1236,8 @@ impl<'a> State<'a> {
         buffer: &wgpu::Buffer,
         data: &T,
     ) {
-        let bytes = bytemuck::bytes_of(data);
-        // dbg!(&data);
-        // self.queue.write_buffer(buffer, 0, bytemuck::bytes_of(data));
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Command Encoder"),
-            });
-        let device_buffer = self.device.create_buffer(&BufferDescriptor {
-            label: None,
-            size: bytes.len() as u64,
-            usage: BufferUsages::COPY_SRC,
-            mapped_at_creation: true,
-        });
-        let buffer_slice = device_buffer.slice(..);
-        let _ = self.device.poll(wgpu::wgt::PollType::Wait);
-        buffer_slice.get_mapped_range_mut()[..bytes.len()].copy_from_slice(bytes);
-        device_buffer.unmap();
-        encoder.copy_buffer_to_buffer(
-            &device_buffer,
-            0,
-            &buffer,
-            0,
-            std::mem::size_of_val(&bytes) as BufferAddress,
-        ); //A mutable borrow to the command encoder is needed here in order to update uniforms
-        self.queue.submit(std::iter::once(encoder.finish()));
+        // Use direct write - much more efficient than creating temporary buffers
+        self.queue.write_buffer(buffer, 0, bytemuck::bytes_of(data));
     }
 
     fn update_transform_matrix(&mut self) {
@@ -1239,6 +1252,160 @@ impl<'a> State<'a> {
 
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&transform));
+    }
+
+    fn copy_texture_to_clipboard(&mut self) {
+        // Create a buffer to copy texture data into
+
+        // let texture_size = self.ping_texture.size();
+        // let staging_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        //     label: Some("Staging Texture"),
+        //     size: texture_size,
+        //     format: wgpu::TextureFormat::Rgba8Unorm,
+        //     usage: wgpu::TextureUsages::COPY_DST,
+        //     mip_level_count: 1,
+        //     sample_count: 1,
+        //     dimension: wgpu::TextureDimension::D2,
+        //     view_formats: &[],
+        // });
+
+        let buffer_size = (SIM_WIDTH * SIM_HEIGHT * 2 * 2) as u64; // Rg16Float = 4 components * 4 bytes each
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Texture Copy Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        // Create encoder for the copy operation
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Texture Copy Encoder"),
+            });
+
+        // encoder.copy_texture_to_texture(
+        //     self.ping_texture.as_image_copy(),
+        //     staging_texture.as_image_copy(),
+        //     wgpu::Extent3d {
+        //         width: SIM_WIDTH,
+        //         height: SIM_HEIGHT,
+        //         depth_or_array_layers: 1,
+        //     },
+        // );
+
+        // Copy texture to buffer
+        encoder.copy_texture_to_buffer(
+            self.pong_texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(SIM_WIDTH * 2 * 2), // 2 components * 2 bytes per component
+                    rows_per_image: Some(SIM_HEIGHT),
+                },
+            },
+            wgpu::Extent3d {
+                width: SIM_WIDTH,
+                height: SIM_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // Submit the copy command
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Map the buffer and read the data
+        let buffer_slice = staging_buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap();
+        });
+
+        // Wait for the mapping to complete
+        self.device.poll(wgpu::PollType::wait_indefinitely());
+        receiver.recv().unwrap().unwrap();
+
+        // Read the mapped data
+        {
+            let data = buffer_slice.get_mapped_range();
+            let float_data: &[half::f16] = bytemuck::cast_slice(&data);
+
+            // Convert Rg16Float to RGBA8 for clipboard
+            // let mut rgba8_data = Vec::with_capacity((SIM_WIDTH * SIM_HEIGHT * 4) as usize);
+            let mut rgb32_data = Vec::with_capacity((SIM_WIDTH * SIM_HEIGHT * 3) as usize);
+
+            for chunk in float_data.chunks(2) {
+                if chunk.len() == 2 {
+                    // Clamp float values to [0.0, 1.0] and convert to u8
+                    let v = chunk[0];
+
+                    let v_gamma_corrected =
+                        v.to_f32().max(0.0).powf(1.0 / 1.01) * self.render_params.exposure; //.clamp(0.0, 1.0);
+                    let r = v_gamma_corrected;
+                    let g = v_gamma_corrected;
+                    let b = v_gamma_corrected;
+                    //     (v.to_f32().max(0.0).powf(1.0 / 1.01) * 10.0).clamp(0.0, 1.0);
+                    // let r = (v_gamma_corrected * 255.0) as u8;
+                    // let g = (v_gamma_corrected * 255.0) as u8;
+                    // let b = (v_gamma_corrected * 255.0) as u8;
+                    // let r = (chunk[0].clamp(0.0, 1.0) * 255.0) as u8;
+                    // let g = (chunk[0].clamp(0.0, 1.0) * 255.0) as u8;
+                    // let b = (chunk[0].clamp(0.0, 1.0) * 255.0) as u8;
+                    // let a = (chunk[3].clamp(0.0, 1.0) * 255.0) as u8;
+
+                    rgb32_data.extend_from_slice(&[r, g, b]);
+                }
+            }
+
+            // Create image and copy to clipboard
+            if let Some(img) = image::Rgb32FImage::from_raw(SIM_WIDTH, SIM_HEIGHT, rgb32_data) {
+                // let dynamic_img = image::DynamicImage::ImageRgba32F(img);
+
+                // Convert to RGB for clipboard (some systems don't handle RGBA well)
+                // let rgb_img = dynamic_img.to_rgba32f().into_raw();
+
+                // Encode as PNG in memory
+                // let mut png_data = std::io::Cursor::new(Vec::new());
+                // if let Ok(_) = rgb_img.write_to(&mut png_data, image::ImageFormat::Png) {
+                //     let png_bytes = png_data.into_inner();
+
+                // Copy to clipboard
+                if let Ok(mut clipboard) = Clipboard::new() {
+                    // Save rgb_img as a PNG file
+                    // if let Some(img) =
+                    //     image::RgbaImage::from_raw(SIM_WIDTH, SIM_HEIGHT, rgb_img.clone())
+                    // {
+                    if let Err(e) = img.save("output.exr") {
+                        eprintln!("Failed to save image as PNG: {}", e);
+                    } else {
+                        println!("Image saved to output.png");
+                    }
+                    // } else {
+                    //     eprintln!("Failed to create image for PNG saving");
+                    // }
+                    match clipboard.set_image(arboard::ImageData {
+                        width: SIM_WIDTH as usize,
+                        height: SIM_HEIGHT as usize,
+                        bytes: bytemuck::cast_slice(&img.into_raw()).into(),
+                    }) {
+                        Ok(_) => println!("Texture copied to clipboard!"),
+                        Err(e) => eprintln!("Failed to copy to clipboard: {}", e),
+                    }
+                } else {
+                    eprintln!("Failed to access clipboard");
+                }
+                // } else {
+                //     eprintln!("Failed to encode image as PNG");
+                // }
+            } else {
+                eprintln!("Failed to create image from texture data");
+            }
+        }
+
+        // Unmap the buffer
+        staging_buffer.unmap();
     }
 
     fn update(&mut self) {
