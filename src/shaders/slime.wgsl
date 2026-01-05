@@ -14,7 +14,8 @@ struct Agent {
     // position: vec2<f32>;
 	posX: f32,
     posY: f32,
-    angle: f32
+    angle: f32,
+    _padding: f32
 	//intensity: f32;
 };
 struct Agents {
@@ -52,7 +53,7 @@ struct FloatArray {
     elements: array<f32>,
 };
 // @group(0) @binding(3) var<storage, read_write> Texture : FloatArray;
-@group(0) @binding(3) var SourceTexture : texture_storage_2d<rgba32float, read_write>;
+@group(0) @binding(3) var SourceTexture : texture_storage_2d<rg16float, read_write>;
 
 
 
@@ -61,26 +62,29 @@ fn sense(agent: Agent, settings: SpeciesSettings, sensorAngleOffset: f32) -> f32
     let sensorDir = vec2<f32>(cos(sensorAngle), sin(sensorAngle));
     let position = vec2<f32>(agent.posX, agent.posY);
     let sensorPos = position + sensorDir * settings.sensorOffsetDst;
-    let sensorCentreX = i32(sensorPos.x);
-    let sensorCentreY = i32(sensorPos.y);
+    
+    // Clamp sensor position to texture bounds
+    let sensorCentreX = clamp(i32(sensorPos.x), 0, i32(shaderParams.width) - 1);
+    let sensorCentreY = clamp(i32(sensorPos.y), 0, i32(shaderParams.height) - 1);
 
-    var sum = 0.0;
-
-    for (var offsetX = -i32(settings.sensorSize); offsetX <= i32(settings.sensorSize); offsetX++) {
-        for (var offsetY = -i32(settings.sensorSize); offsetY <= i32(settings.sensorSize); offsetY++) {
-			// let sampleX = min(i32(shaderParams.width) - 1, max(0, sensorCentreX + i32(offsetX)));
-			// let sampleY = min(i32(shaderParams.height) - 1, max(0, sensorCentreY + i32(offsetY)));
-            let sampleX = sensorCentreX + i32(offsetX);
-            let sampleY = sensorCentreY + i32(offsetY);
-			//let offset : i32 = sampleY * i32(shaderParams.width) * 4 + sampleX * 4;
-            // sum = sum + dot(vec4<f32>(1.0), vec4<f32>(
-            //     textureLoad(SourceTexture, vec2<i32>(sampleX, sampleY)).r,
-            // ));
-            sum = sum + textureLoad(SourceTexture, vec2<i32>(sampleX, sampleY)).r;
-        }
+    // Use single sample for better performance, or fixed 3x3 pattern
+    if (settings.sensorSize <= 0.5) {
+        // Single sample - fastest option
+        return textureLoad(SourceTexture, vec2<i32>(sensorCentreX, sensorCentreY)).r;
+    } else {
+        // Fixed 3x3 pattern - avoid nested loops
+        var sum = 0.0;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX-1, 0, i32(shaderParams.width)-1), clamp(sensorCentreY-1, 0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX,   0, i32(shaderParams.width)-1), clamp(sensorCentreY-1, 0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX+1, 0, i32(shaderParams.width)-1), clamp(sensorCentreY-1, 0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX-1, 0, i32(shaderParams.width)-1), clamp(sensorCentreY,   0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX,   0, i32(shaderParams.width)-1), clamp(sensorCentreY,   0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX+1, 0, i32(shaderParams.width)-1), clamp(sensorCentreY,   0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX-1, 0, i32(shaderParams.width)-1), clamp(sensorCentreY+1, 0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX,   0, i32(shaderParams.width)-1), clamp(sensorCentreY+1, 0, i32(shaderParams.height)-1))).r;
+        sum += textureLoad(SourceTexture, vec2<i32>(clamp(sensorCentreX+1, 0, i32(shaderParams.width)-1), clamp(sensorCentreY+1, 0, i32(shaderParams.height)-1))).r;
+        return sum * 0.111111; // / 9.0
     }
-
-    return sum;
 }
 
 fn scaleToRange01(state: u32) -> f32 {
@@ -141,32 +145,28 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
     var direction = vec2<f32>(cos(agent.angle), sin(agent.angle));
     var newPos: vec2<f32> = pos + direction * shaderParams.delta * speciesSettings.moveSpeed;
 
-	
-	// Clamp position to map boundaries, and pick new random move dir if hit boundary
-	//if (newPos.x < 0.0 || newPos.x >= f32(shaderParams.width) || newPos.y < 0.0 || newPos.y >= f32(shaderParams.height)) {
-	//	random = triple32(random);
-	//	var randomAngle = scaleToRange01(random) * TWO_PI;
-//
-//		newPos.x = min(f32(shaderParams.width - 1.0),max(0.0, newPos.x));
-//		newPos.y = min(f32(shaderParams.height - 1.0),max(0.0, newPos.y));
-//		agents.data[id.x].angle = randomAngle;
-//	}
-	// else {
-	//     // var offset : i32 = i32(newPos.y) * i32(shaderParams.width) * 4 + i32(newPos.x) * 4;
-	// 	// var oldTrail : vec4<f32> = vec4<f32>(TrailMap.elements[offset], TrailMap.elements[offset + 1], TrailMap.elements[offset + 2], TrailMap.elements[offset + 3]);
-    //     // var newVal : vec4<f32> = min(vec4<f32>(1., 1., 1., 1.), oldTrail + vec4<f32>(1.0) * vec4<f32>(shaderParams.delta * shaderParams.delta, shaderParams.delta * shaderParams.delta, shaderParams.delta * shaderParams.delta, shaderParams.delta * shaderParams.delta));
-	// 	// TrailMap.elements[offset] = newVal.x;
-	// 	// TrailMap.elements[offset + 1] = newVal.y;
-	// 	// TrailMap.elements[offset + 2] = newVal.z;
-	// 	// TrailMap.elements[offset + 3] = newVal.w;
-	// }
+	// Handle boundary collisions - bounce off edges
+	if (newPos.x < 0.0 || newPos.x >= shaderParams.width || newPos.y < 0.0 || newPos.y >= shaderParams.height) {
+		// Clamp position to stay within bounds
+		newPos.x = clamp(newPos.x, 0.0, shaderParams.width - 1.0);
+		newPos.y = clamp(newPos.y, 0.0, shaderParams.height - 1.0);
+		
+		// Bounce: reverse direction with some randomness
+		random = triple32(random);
+		let randomAngle = scaleToRange01(random) * PI_OVER_180 * 90.0; // ±45 degrees
+		agents.data[id.x].angle = agents.data[id.x].angle + 3.14159 + randomAngle - (PI_OVER_180 * 45.0);
+	}
+
     agents.data[id.x].posX = newPos.x;
     agents.data[id.x].posY = newPos.y;
-    let intNewPos = vec2<i32>(i32(newPos.x), i32(newPos.y));
+    
+    // Bounds check for texture store
+    let intNewPos = vec2<i32>(clamp(i32(newPos.x), 0, i32(shaderParams.width) - 1), 
+                              clamp(i32(newPos.y), 0, i32(shaderParams.height) - 1));
     let pix = textureLoad(SourceTexture, intNewPos);
     
     // Make trail deposition frame-rate independent using delta time
     let baseTrailIntensity = 0.009;
     let trailIntensity = baseTrailIntensity * shaderParams.delta * 10.0;
-    textureStore(SourceTexture, intNewPos, vec4<f32>(pix.r, 0.0, trailIntensity + pix.r, 1.0));
+    textureStore(SourceTexture, intNewPos, vec4<f32>(pix.r, trailIntensity + pix.r, 0.0, 1.0));
 }

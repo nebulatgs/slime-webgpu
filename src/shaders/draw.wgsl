@@ -6,9 +6,9 @@
     time: f32;
 };
 struct Agent {
-    posX: f32;
-    posY: f32;
-    angle: f32;
+	posX: f32;
+	posY: f32;
+	angle: f32;
 	//intensity: f32;
 };
 [[block]]struct Agents {
